@@ -7,6 +7,7 @@ import {
 import { renderBuild } from "./build.js";
 import { renderVoice, stopVoice } from "./voice.js";
 import { renderCode } from "./code.js";
+import { gatherSources, sourcesPrompt, cvr, wikipedia } from "./research.js";
 
 const view = () => $("#view");
 let tab = "chat";
@@ -43,6 +44,8 @@ const STARTERS = {
   konstruktor: ["Hvad er kravet til U-værdi for ydervægge ved tilbygning?", "Hvor højt skal et værn ved en altan være?", "Lav en materialeliste til en 12 m² skillevæg", "Hvad skal jeg huske ved en tagudskiftning?"],
   personal: ["Planlæg min dag", "Hjælp mig med en svær beslutning", "Hvad husker du om mig?"],
   planning: ["Lav en ugeplan ud fra mine opgaver", "Hvad er mine vigtigste deadlines?"],
+  research: ["Undersøg reglerne for at bygge en carport uden byggetilladelse", "Hvad siger man om radonsikring?"],
+  tekst: ["Skriv et tilbud på en ny terrasse", "Skriv en forsidetekst til mit tømrerfirma", "Skriv en professionel mail til en kunde"],
   developer: ["Lav en hjemmeside til mit tømrerfirma", "Forklar forskellen på React og Next.js"],
   business: ["Hvordan prissætter jeg et tilbud på en tilbygning?", "Ideer til at få flere kunder"],
   marketing: ["Skriv en tekst til forsiden på mit tømrerfirmas hjemmeside", "Lav 5 opslag til Facebook"],
@@ -50,18 +53,27 @@ const STARTERS = {
   document: ["Skriv et byggemødereferat", "Skriv et tilbud på en terrasse"],
 };
 
-export async function sendMessage(text, { conv = currentConv(), onToken } = {}) {
+export async function sendMessage(text, { conv = currentConv(), onToken, research, image } = {}) {
   const agent = conv.agent || state.settings.agent;
-  const { messages, sources } = buildContext(agent, text, conv.messages);
-  conv.messages.push({ role: "user", content: text, ts: Date.now() });
+  let extra = "", webSources = [];
+  if (research || AGENTS[agent]?.research) {
+    onToken?.(""); // vis at noget sker
+    try { webSources = await gatherSources(text); extra = sourcesPrompt(webSources); } catch {}
+  }
+  const { messages, sources } = buildContext(agent, text, conv.messages, extra);
+  if (image) messages[messages.length - 1].content = [{ type: "text", text }, { type: "image_url", image_url: { url: image } }];
+  conv.messages.push({ role: "user", content: text, image, ts: Date.now() });
   if (conv.title === "Ny samtale") conv.title = text.slice(0, 50);
-  const bot = { role: "assistant", content: "", ts: Date.now(), agent, sources: sources.map((s) => ({ title: s.title, source: s.source, kind: s.kind })) };
+  const bot = { role: "assistant", content: "", ts: Date.now(), agent,
+    sources: [...sources.map((s) => ({ title: s.title, source: s.source, kind: s.kind })),
+      ...webSources.filter((w) => !w.error).map((w) => ({ title: w.title, source: w.url, kind: "web" }))] };
   conv.messages.push(bot);
   save("conversations");
   try {
     bot.content = await generate(messages, { onToken: (t) => { bot.content = t; onToken?.(t); } });
   } catch (e) {
-    bot.content = (bot.content ? bot.content + "\n\n" : "") + "⚠️ " + e.message;
+    const hint = image ? " (billedforståelse kræver en vision-model – vælg en under Mere, hvis din enhed er kraftig nok)" : "";
+    bot.content = (bot.content ? bot.content + "\n\n" : "") + "⚠️ " + e.message + hint;
   }
   bot.model = llm.model;
   save("conversations");
@@ -82,9 +94,10 @@ function renderChat() {
     ${!llm.engine ? `<div class="warnbox">Ingen AI-model er indlæst endnu. <button class="btn sm" id="loadNow">Indlæs anbefalet model</button></div>` : ""}
     <div class="chat" id="chat"></div>
     <form class="composer" id="composer"><div class="inner">
+      <label class="btn sub" style="flex:0 0 auto" title="Vedhæft billede">📎<input type="file" id="imgIn" accept="image/*" hidden /></label>
       <textarea id="input" rows="1" placeholder="Skriv til ${esc(AGENTS[agent].name)}…"></textarea>
       <button class="btn" id="sendBtn" type="submit">➤</button>
-    </div></form>`;
+    </div><div id="attach" class="inner" style="margin-top:4px"></div></form>`;
   const chat = $("#chat");
   const draw = () => {
     chat.innerHTML = conv.messages.length ? "" : `<div class="empty"><p>${AGENTS[agent].icon} <b>${esc(AGENTS[agent].name)}</b> – kører 100 % på din enhed.</p>
@@ -98,6 +111,14 @@ function renderChat() {
   $("#delConv").onclick = () => { if (confirm("Slet denne samtale?")) { state.conversations = state.conversations.filter((c) => c.id !== conv.id); state.settings.currentConv = null; save("conversations"); renderChatAgain(); } };
   $("#loadNow")?.addEventListener("click", quickLoad);
   chat.addEventListener("click", (e) => { const s = e.target.closest("[data-s]"); if (s) submit(s.dataset.s); });
+  let pendingImg = null;
+  $("#imgIn").onchange = (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    if (file.size > 6e6) return toast("Billedet er for stort (maks 6 MB)");
+    const rd = new FileReader();
+    rd.onload = () => { pendingImg = rd.result; $("#attach").innerHTML = `<img src="${pendingImg}" style="height:46px;border-radius:8px" /> <button class="btn ghost sm" id="imgClr">Fjern</button>`; $("#imgClr").onclick = () => { pendingImg = null; $("#attach").innerHTML = ""; }; };
+    rd.readAsDataURL(file);
+  };
   const input = $("#input");
   input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 160) + "px"; });
   input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !/Mobi/.test(navigator.userAgent)) { e.preventDefault(); submit(input.value); } });
@@ -110,7 +131,8 @@ function renderChat() {
     input.value = ""; input.style.height = "auto";
     $("#sendBtn").textContent = "■";
     let node;
-    await sendMessage(text, { conv, onToken: () => {
+    const img = pendingImg; pendingImg = null; $("#attach").innerHTML = "";
+    await sendMessage(text, { conv, image: img, onToken: () => {
       if (!node) { draw(); node = chat.lastElementChild; }
       const last = conv.messages[conv.messages.length - 1];
       node.querySelector(".content").innerHTML = md(stripActions(last.content));
@@ -127,7 +149,7 @@ function renderChatAgain() { view().innerHTML = ""; renderChat(); }
 function bubble(m, i, conv) {
   const el = document.createElement("div");
   el.className = "msg " + (m.role === "user" ? "user" : "bot");
-  if (m.role === "user") { el.textContent = m.content; return el; }
+  if (m.role === "user") { el.innerHTML = (m.image ? `<img src="${m.image}" style="max-width:220px;border-radius:10px;display:block;margin-bottom:6px" />` : "") + `<span></span>`; el.querySelector("span").textContent = m.content; return el; }
   const actions = parseActions(m.content);
   el.innerHTML = `<div class="content">${md(stripActions(m.content)) || "…"}</div>
     ${actions.map((a, j) => `<div class="action">Forslag: <b>${esc(a.tool === "task_create" ? "Opret opgave" : a.tool === "memory_save" ? "Husk" : "Tilføj til viden")}</b> – ${esc(a.title || a.content || "")}
@@ -137,6 +159,7 @@ function bubble(m, i, conv) {
       <button data-good>${m.rating === 1 ? "👍 Godt" : "👍"}</button>
       <button data-fix>✏️ Ret svaret</button>
       <button data-speak>🔊</button>
+      <button data-pdf>📄 PDF</button>
     </div>`;
   el.addEventListener("click", (e) => {
     const ap = e.target.closest("[data-apply]");
@@ -149,6 +172,7 @@ function bubble(m, i, conv) {
     }
     if (e.target.closest("[data-fix]")) correct(conv, i);
     if (e.target.closest("[data-speak]")) speakText(stripActions(m.content));
+    if (e.target.closest("[data-pdf]")) exportPdf(conv.messages[i - 1]?.content || "", stripActions(m.content));
   });
   return el;
 }
@@ -162,6 +186,30 @@ function correct(conv, i) {
   state.feedback.push({ id: uid(), q, a: conv.messages[i].content, correction: fixed.trim(), rating: -1, agent: conv.messages[i].agent, ts: Date.now() });
   save("knowledge"); save("feedback");
   toast("✅ Lært! Rettelsen er gemt i din vidensbase");
+}
+
+export async function exportPdf(question, answer) {
+  try {
+    const { jsPDF } = await import("https://esm.sh/jspdf@2.5.2");
+    const doc = new jsPDF({ unit: "mm", format: "a4" });
+    const W = 180, left = 15; let y = 20;
+    doc.setFont("helvetica", "bold"); doc.setFontSize(16); doc.text("Jarvis", left, y); y += 4;
+    doc.setDrawColor(200); doc.line(left, y, left + W, y); y += 8;
+    const block = (title, text, bold) => {
+      doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(120); doc.text(title, left, y); y += 5;
+      doc.setFont("helvetica", bold ? "bold" : "normal"); doc.setFontSize(11); doc.setTextColor(20);
+      for (const line of doc.splitTextToSize(text.replace(/[#*`>|]/g, ""), W)) {
+        if (y > 282) { doc.addPage(); y = 20; }
+        doc.text(line, left, y); y += 5.6;
+      }
+      y += 4;
+    };
+    if (question) block("Spørgsmål", question);
+    block("Svar", answer);
+    doc.setFontSize(8); doc.setTextColor(150);
+    doc.text("Lavet lokalt med Jarvis · " + new Date().toLocaleString("da-DK"), left, 290);
+    doc.save("jarvis-svar.pdf");
+  } catch (e) { toast("⚠️ PDF kræver internet første gang: " + e.message); }
 }
 
 export function speakText(text) {
@@ -352,6 +400,18 @@ async function renderMore() {
         <option value="Xenova/whisper-tiny">Whisper tiny – hurtigst (≈ 40 MB)</option>
         <option value="Xenova/whisper-base">Whisper base – anbefalet (≈ 80 MB)</option>
         <option value="Xenova/whisper-small">Whisper small – bedst dansk (≈ 250 MB)</option></select></label></div>
+    <div class="card"><h3 style="margin-top:0">Data & forbindelser</h3>
+      <label>Virksomhedsregister (CVR) – søg på navn eller CVR-nummer
+        <div class="row" style="margin-top:4px"><input id="cvrQ" class="grow" placeholder="fx 'Succes Cleaning' eller 12345678" /><button class="btn" id="cvrBtn">Slå op</button></div></label>
+      <div id="cvrRes" class="muted" style="margin-top:8px"></div>
+      <h3>Hvad kan den lokale app – og hvad kræver serveren?</h3>
+      <p class="muted" style="font-size:13px">Denne app kører 100% i din browser. Det gør den privat og gratis, men sætter grænser. Det der kræver en server, bygger vi på Jarvis 1.0 (den fulde version i projektet).</p>
+      <div style="font-size:13px">
+        <div class="item"><span class="badge ok">virker her</span><div class="body">Chat, stemme, hukommelse, træning, dokumenter, CAD-tegninger, hjemmesider, research (Wikipedia + CVR), PDF, billed-upload (med vision-model).</div></div>
+        <div class="item"><span class="badge warn">kræver server</span><div class="body">Hente fra BBR/byggeregisteret (Datafordeler kræver login/nøgle), køre opgaver 24/7, automatiseringer når appen er lukket, selv gå ind på andre sider og udfylde formularer, og familie-logins hvor I hver har jeres egen Jarvis og du ser alt.</div></div>
+        <div class="item"><span class="badge bad">ikke muligt uden åbent API</span><div class="body">Styre ure, briller, TV og andre enheder kræver, at enheden har et åbent API – mange (fx smart-briller) har det ikke. Billedgenerering lokalt kræver meget kraftig hardware; realistisk sker det bedst via en server.</div></div>
+      </div>
+      <p class="muted" style="font-size:12.5px">Hacking/indtrængen i systemer bygger jeg ikke – heller ikke i serverversionen.</p></div>
     <div class="card"><h3 style="margin-top:0">Backup</h3>
       <p class="muted">Alt ligger kun på denne enhed. Tag backup jævnligt, og flyt data mellem telefon og computer med eksport/import.</p>
       <div class="row"><button class="btn sub" id="exp">⬇️ Eksportér alt</button><label class="btn sub" style="text-align:center">⬆️ Importér<input type="file" id="imp" accept=".json" hidden /></label>
@@ -409,6 +469,19 @@ async function renderMore() {
   $("#exp").onclick = async () => download(`jarvis-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(await exportAll()), "application/json");
   $("#imp").onchange = async (e) => {
     try { await importAll(JSON.parse(await e.target.files[0].text())); toast("Backup gendannet ✓"); renderMore(); } catch (err) { toast("⚠️ " + err.message); }
+  };
+  $("#cvrBtn").onclick = async () => {
+    const q = $("#cvrQ").value.trim(); if (!q) return;
+    $("#cvrRes").textContent = "Slår op…";
+    try {
+      const c = await cvr(q);
+      $("#cvrRes").innerHTML = `<div class="result"><b>${esc(c.navn || "")}</b> · CVR ${esc(String(c.cvr || ""))} ${c.status ? `<span class="badge ok">${esc(c.status)}</span>` : ""}<br>
+        ${esc(c.adresse || "")}<br>${esc(c.branche || "")}${c.form ? " · " + esc(c.form) : ""}${c.ansatte ? " · " + esc(String(c.ansatte)) + " ansatte" : ""}
+        ${c.telefon ? "<br>Tlf: " + esc(String(c.telefon)) : ""}${c.email ? " · " + esc(c.email) : ""}
+        <br><a href="${esc(c.url)}" target="_blank" rel="noopener">Se på Virk</a>
+        <button class="btn sm sub" id="cvrSave" style="margin-top:6px">Gem i hukommelsen</button></div>`;
+      $("#cvrSave").onclick = () => { state.memories.unshift({ id: uid(), content: `Virksomhed: ${c.navn}, CVR ${c.cvr}, ${c.adresse}. ${c.branche || ""}`, importance: 0.7, createdAt: Date.now() }); save("memories"); toast("Gemt"); };
+    } catch (e) { $("#cvrRes").innerHTML = `<span class="badge bad">${esc(e.message)}</span> – virker kun hvis tjenesten tillader browseropslag (CORS). Ellers via serverversionen.`; }
   };
   $("#wipe").onclick = async () => {
     if (prompt("Skriv SLET for at slette alle data på denne enhed") !== "SLET") return;

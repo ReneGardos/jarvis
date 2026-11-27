@@ -59,7 +59,8 @@ export function buildPreview(files, entry = "index.html") {
     const c = files[src.replace(/^\.\//, "")];
     return c != null ? `<script${a}${b}>\n${c.replace(/<\/script/gi, "<\\/script")}\n</script>` : m;
   });
-  return html;
+  const probe = `<script>(function(){function send(m){parent.postMessage({__jarvisErr:String(m)},"*")}window.addEventListener("error",function(e){send((e.message||e.error)+" @ "+(e.filename||"").split("/").pop()+":"+e.lineno)});window.addEventListener("unhandledrejection",function(e){send("Promise: "+(e.reason&&e.reason.message||e.reason))});var ce=console.error;console.error=function(){ce.apply(console,arguments);send(Array.from(arguments).join(" "))}})();<\/script>`;
+  return html.includes("</head>") ? html.replace("</head>", probe + "</head>") : probe + html;
 }
 
 /** Finder filforslag i AI'ens svar: ### FILE: sti + kodeblok */
@@ -93,6 +94,8 @@ export function renderCode() {
           <button class="btn sm" id="prevBtn">▶ Vis side</button></div>
         <textarea class="editor" id="editor" spellcheck="false">${esc(cur.file ? p.files[cur.file] : "")}</textarea>
         <iframe class="preview hidden" id="preview" sandbox="allow-scripts allow-forms allow-modals" title="Forhåndsvisning"></iframe>
+        <div id="errBox" class="warnbox hidden" style="margin-top:8px"><b>Fejl på siden</b><pre id="errList" style="white-space:pre-wrap;font-size:12px;margin:6px 0"></pre>
+          <button class="btn sm" id="fixErr">🐞 Bed Jarvis rette fejlen</button></div>
       </div>
     </div>
     <div class="card">
@@ -118,11 +121,18 @@ export function renderCode() {
     if (i < 0) return toast("Ingen tidligere version");
     p.files[cur.file] = p.versions[i].content; p.versions.splice(i, 1); save("projects"); renderCode(); toast("Gendannet forrige version");
   });
+  cur.errors = [];
+  if (!window.__jarvisErrHook) {
+    window.__jarvisErrHook = true;
+    window.addEventListener("message", (e) => {
+      if (e.data?.__jarvisErr) { cur.errors.push(e.data.__jarvisErr); const box = document.getElementById("errBox"); if (box) { box.classList.remove("hidden"); box.querySelector("#errList").textContent = cur.errors.slice(-5).join("\n"); } }
+    });
+  }
   $("#prevBtn").onclick = () => {
     const f = $("#preview"); const show = f.classList.contains("hidden");
     f.classList.toggle("hidden", !show); editor.classList.toggle("hidden", show);
     $("#prevBtn").textContent = show ? "✎ Redigér" : "▶ Vis side";
-    if (show) f.srcdoc = buildPreview(p.files, cur.file?.endsWith(".html") ? cur.file : "index.html");
+    if (show) { cur.errors = []; $("#errBox")?.classList.add("hidden"); f.srcdoc = buildPreview(p.files, cur.file?.endsWith(".html") ? cur.file : "index.html"); }
   };
   $("#pSel").onchange = (e) => { cur.project = state.projects.find((x) => x.id === e.target.value); state.settings.currentProject = cur.project.id; cur.file = null; cur.dir = null; save("settings"); renderCode(); };
   $("#pNew").onclick = () => {
@@ -166,6 +176,7 @@ export function renderCode() {
   };
   drawChat();
 
+  $("#fixErr")?.addEventListener("click", () => { $("#cIn").value = "Siden giver disse fejl i browseren:\n" + cur.errors.slice(-5).join("\n") + "\nFind årsagen og ret den. Skriv hele den rettede fil."; $("#cSend").click(); });
   $("#cSend").onclick = async () => {
     if (llm.busy) return stopGenerating();
     const text = $("#cIn").value.trim(); if (!text) return;

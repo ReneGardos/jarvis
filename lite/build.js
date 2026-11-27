@@ -1,9 +1,10 @@
 // Fanen "Byg": beregnere til bygningskonstruktøren. Tallene regnes eksakt i kode – ikke af AI'en.
 import { $, esc, state, save, uid, toast } from "./core.js";
 import { BR18_U, CO2_LIMITS, LAMBDA, RS, daylight, roof, stairs, uValue, ventilation, wallMaterials } from "./calc.js";
+import { renderDrawing } from "./cad-ui.js";
 
-const TOOLS = [["u", "U-værdi"], ["trappe", "Trappe"], ["vaeg", "Skillevæg"], ["tag", "Tag"], ["dagslys", "Dagslys"], ["vent", "Ventilation"], ["co2", "CO₂-krav"]];
-let current = "u";
+const TOOLS = [["tegning", "📐 Tegning"], ["u", "U-værdi"], ["trappe", "Trappe"], ["vaeg", "Skillevæg"], ["tag", "Tag"], ["dagslys", "Dagslys"], ["vent", "Ventilation"], ["co2", "CO₂-krav"]];
+let current = "tegning";
 let layers = null;
 
 const num = (id) => parseFloat(String($(id)?.value || "").replace(",", "."));
@@ -16,6 +17,7 @@ export function renderBuild() {
     <div id="tool"></div>
     <p class="muted">Beregnerne er til overslag og kontrol. Kravene er hentet fra BR18 (se fanen Viden for kilder) – kontrollér altid den aktuelle udgave på bygningsreglementet.dk, og lad en statiker eftervise bærende konstruktioner.</p>`;
   $("#seg").onclick = (e) => { const b = e.target.closest("[data-k]"); if (b) { current = b.dataset.k; renderBuild(); } };
+  if (current === "tegning") return renderDrawing($("#tool"));
   ({ u: uTool, trappe: stairTool, vaeg: wallTool, tag: roofTool, dagslys: dayTool, vent: ventTool, co2: co2Tool })[current]();
 }
 

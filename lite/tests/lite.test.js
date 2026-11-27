@@ -103,3 +103,83 @@ test("Kontekst indeholder relevant viden og opgaver", () => {
   assert.ok(sources.some((s) => /dagslys/i.test(s.title)));
   assert.ok(messages[0].content.includes("Ring til kunden"));
 });
+
+// ---------------- CAD ----------------
+import { demoHouse, validateModel, plan2d, mesh3d, toDXF, toDXF3D, toOBJ, toIFC, wallGeom, bounds } from "../cad.js";
+
+test("CAD: demohus er gyldigt og har forventede mål", () => {
+  const m = demoHouse();
+  const v = validateModel(m);
+  assert.ok(v.ok, v.errors.join("; "));
+  const b = bounds(m);
+  assert.equal(b.w, 10000); assert.equal(b.d, 8000);
+});
+
+test("CAD: åbning uden for væg fanges", () => {
+  const m = { wallHeight: 2600, walls: [{ x1: 0, y1: 0, x2: 2000, y2: 0, thickness: 300, type: "ext", openings: [{ pos: 1800, width: 1000, height: 2100, type: "door" }] }] };
+  assert.equal(validateModel(m).ok, false);
+});
+
+test("CAD: vægfaces ligger præcist i halv vægtykkelse", () => {
+  // Enkelt vandret ydervæg, t=300 → faces i y=±150
+  const m = { wallHeight: 2600, walls: [{ x1: 0, y1: 0, x2: 5000, y2: 0, thickness: 300, type: "ext", openings: [] }] };
+  const L = plan2d(m);
+  const ys = new Set(L.walls.flatMap((s) => s.map((p) => p[1])));
+  assert.ok(ys.has(150) && ys.has(-150));
+});
+
+test("CAD: åbning laver hul i plan (fire vægsegmenter langs en væg med ét vindue)", () => {
+  const m = { wallHeight: 2600, walls: [{ x1: 0, y1: 0, x2: 4000, y2: 0, thickness: 200, type: "ext", openings: [{ pos: 2000, width: 1000, height: 1300, sill: 900, type: "window" }] }] };
+  const L = plan2d(m);
+  // Pr. side: segment før (0–1500) og efter (2500–4000) = 2 segmenter × 2 sider = 4 lange segmenter
+  const horiz = L.walls.filter((s) => Math.abs(s[0][1]) === 100 && Math.abs(s[1][1]) === 100 && s[0][0] !== s[1][0]);
+  assert.equal(horiz.length, 4);
+  // Vinduet efterlader et gab mellem x=1500 og x=2500
+  assert.ok(horiz.some((s) => Math.min(s[0][0], s[1][0]) === 0 && Math.max(s[0][0], s[1][0]) === 1500));
+  assert.ok(horiz.some((s) => Math.min(s[0][0], s[1][0]) === 2500 && Math.max(s[0][0], s[1][0]) === 4000));
+});
+
+test("CAD: DXF er velformet og har lag + entiteter", () => {
+  const dxf = toDXF(demoHouse());
+  assert.ok(dxf.startsWith("0\nSECTION"));
+  assert.ok(dxf.trimEnd().endsWith("EOF"));
+  assert.ok(dxf.includes("\nLAYER\n") && dxf.includes("\nWALL\n"));
+  assert.ok((dxf.match(/\nLINE\n/g) || []).length > 20);
+  assert.ok(dxf.includes("\nTEXT\n") && dxf.includes("Stue"));
+  // Lige mange SECTION/ENDSEC
+  assert.equal((dxf.match(/\nSECTION\n/g) || []).length, (dxf.match(/\nENDSEC\n/g) || []).length);
+});
+
+test("CAD: 3D-DXF har 3DFACE og OBJ har vertices/faces", () => {
+  const m = demoHouse();
+  const dxf3 = toDXF3D(m);
+  assert.ok((dxf3.match(/\n3DFACE\n/g) || []).length > 10);
+  const obj = toOBJ(m);
+  assert.ok((obj.match(/\nv /g) || []).length > 20);
+  assert.ok((obj.match(/\nf /g) || []).length > 10);
+  assert.ok(obj.includes("g wall") && obj.includes("g roof"));
+});
+
+test("CAD: mesh har lukkede quads og tag over væghøjde", () => {
+  const m = demoHouse();
+  const { vertices, faces, groups } = mesh3d(m);
+  assert.ok(faces.every((f) => f.v.every((i) => i >= 0 && i < vertices.length)));
+  assert.ok(groups.roof?.length >= 2);
+  const maxZ = Math.max(...vertices.map((v) => v[2]));
+  assert.ok(maxZ > m.wallHeight); // gavl rejser sig over væggen
+});
+
+test("CAD: IFC4 er struktur-gyldigt (balanceret, har kerne-entiteter)", () => {
+  const ifc = toIFC(demoHouse(), { name: "Testhus" });
+  assert.ok(ifc.startsWith("ISO-10303-21;") && ifc.trimEnd().endsWith("END-ISO-10303-21;"));
+  assert.ok(ifc.includes("FILE_SCHEMA(('IFC4'))"));
+  for (const t of ["IFCPROJECT", "IFCSITE", "IFCBUILDING", "IFCBUILDINGSTOREY", "IFCWALL", "IFCSLAB", "IFCEXTRUDEDAREASOLID", "IFCRELCONTAINEDINSPATIALSTRUCTURE"])
+    assert.ok(ifc.includes(t), "mangler " + t);
+  // Alle #ref peger på en defineret linje
+  const defined = new Set([...ifc.matchAll(/^#(\d+)=/gm)].map((m) => m[1]));
+  const used = new Set([...ifc.matchAll(/#(\d+)/g)].map((m) => m[1]));
+  const missing = [...used].filter((id) => !defined.has(id));
+  assert.deepEqual(missing, [], "udefinerede referencer: " + missing.slice(0, 5));
+  // Hver datalinje slutter med ;
+  assert.ok(ifc.split("\nDATA;\n")[1].split("\n").filter((l) => l.startsWith("#")).every((l) => l.endsWith(";")));
+});
