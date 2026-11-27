@@ -5,19 +5,21 @@ import {
   loadModel, modelCatalog, parseActions, progress, recommendedModel, save, state, stopGenerating, stripActions, toast, uid, webgpuInfo,
 } from "./core.js";
 import { renderBuild } from "./build.js";
+import { renderDrawing } from "./cad-ui.js";
 import { renderVoice, stopVoice } from "./voice.js";
 import { renderCode } from "./code.js";
 import { gatherSources, sourcesPrompt, cvr, wikipedia } from "./research.js";
+import { renderFunctionSheet, inlineCalc, runCalcTools, calcToolInstructions } from "./functions.js";
 
 const view = () => $("#view");
 let tab = "chat";
 
 // ---------------- Navigation ----------------
-const RENDER = { chat: renderChat, voice: renderVoice, build: renderBuild, code: renderCode, know: renderKnow, tasks: renderTasks, more: renderMore };
+const RENDER = { chat: renderChat, voice: renderVoice, build: renderBuild, tegning: () => renderDrawing(view()), code: renderCode, know: renderKnow, tasks: renderTasks, more: renderMore };
 export function go(t) {
   if (tab === "voice" && t !== "voice") stopVoice();
   tab = t;
-  const dockActive = ["know", "tasks", "more"].includes(t) ? "menu" : t;
+  const dockActive = ["know", "tasks", "more", "tegning", "code", "build"].includes(t) ? "menu" : t;
   $$("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === dockActive));
   view().innerHTML = "";
   RENDER[t]();
@@ -59,11 +61,15 @@ const STARTERS = {
 export async function sendMessage(text, { conv = currentConv(), onToken, research, image } = {}) {
   const agent = conv.agent || state.settings.agent;
   let extra = "", webSources = [];
+  if (AGENTS[agent]?.calc) extra = calcToolInstructions();
   if (research || AGENTS[agent]?.research) {
     onToken?.(""); // vis at noget sker
-    try { webSources = await gatherSources(text); extra = sourcesPrompt(webSources); } catch {}
+    try { webSources = await gatherSources(text); extra = [extra, sourcesPrompt(webSources)].filter(Boolean).join("\n\n"); } catch {}
   }
-  const { messages, sources } = buildContext(agent, text, conv.messages, extra);
+  const history = conv.messages
+    .map((m) => m.role === "calc" ? { role: "assistant", content: m.result ? `(beregning) ${m.result}` : "" } : { role: m.role, content: m.content })
+    .filter((m) => (m.role === "user" || m.role === "assistant") && m.content);
+  const { messages, sources } = buildContext(agent, text, history, extra);
   if (image) messages[messages.length - 1].content = [{ type: "text", text }, { type: "image_url", image_url: { url: image } }];
   conv.messages.push({ role: "user", content: text, image, ts: Date.now() });
   if (conv.title === "Ny samtale") conv.title = text.slice(0, 50);
@@ -78,6 +84,8 @@ export async function sendMessage(text, { conv = currentConv(), onToken, researc
     const hint = image ? " (billedforståelse kræver en vision-model – vælg en under Mere, hvis din enhed er kraftig nok)" : "";
     bot.content = (bot.content ? bot.content + "\n\n" : "") + "⚠️ " + e.message + hint;
   }
+  const tooled = runCalcTools(bot.content);
+  if (tooled.results.length) bot.content = [tooled.text, ...tooled.results.map((r) => `**Resultat (${r.tool}):** ${r.out}`)].filter(Boolean).join("\n\n");
   bot.model = llm.model;
   save("conversations");
   extractMemories(text, bot.content);
@@ -89,18 +97,23 @@ function renderChat() {
   const agent = conv.agent || state.settings.agent;
   view().innerHTML = `
     <div class="toolbar">
-      <select id="agentSel">${Object.entries(AGENTS).map(([k, a]) => `<option value="${k}" ${k === agent ? "selected" : ""}>${a.icon} ${a.name}</option>`).join("")}</select>
+      <button class="chip" id="agentChip" type="button" title="Skift assistent">${AGENTS[agent].icon} ${esc(AGENTS[agent].name)} ▾</button>
       <select id="convSel"><option value="">Samtaler…</option>${state.conversations.slice(0, 40).map((c) => `<option value="${c.id}" ${c.id === conv.id ? "selected" : ""}>${esc(c.title)}</option>`).join("")}</select>
       <button class="btn sub sm" id="newConv">＋ Ny</button>
       <button class="btn ghost sm" id="delConv">Slet</button>
     </div>
     ${!llm.engine ? `<div class="warnbox">Ingen AI-model er indlæst endnu. <button class="btn sm" id="loadNow">Indlæs anbefalet model</button></div>` : ""}
     <div class="chat" id="chat"></div>
-    <form class="composer" id="composer"><div class="inner">
-      <label class="btn sub" style="flex:0 0 auto" title="Vedhæft billede">📎<input type="file" id="imgIn" accept="image/*" hidden /></label>
-      <textarea id="input" rows="1" placeholder="Skriv til ${esc(AGENTS[agent].name)}…"></textarea>
-      <button class="btn" id="sendBtn" type="submit">➤</button>
-    </div><div id="attach" class="inner" style="margin-top:4px"></div></form>`;
+    <form class="composer" id="composer">
+      <div id="fnChips" class="chips"></div>
+      <div class="inner">
+        <button class="btn sub fn-btn" id="fnBtn" type="button" title="Funktioner">＋</button>
+        <textarea id="input" rows="1" placeholder="Skriv eller vælg en funktion (＋)…"></textarea>
+        <button class="btn" id="sendBtn" type="submit">➤</button>
+      </div>
+      <div id="attach" class="inner" style="margin-top:4px"></div>
+      <input type="file" id="imgIn" accept="image/*" hidden />
+    </form>`;
   const chat = $("#chat");
   const draw = () => {
     chat.innerHTML = conv.messages.length ? "" : `<div class="empty"><p>${AGENTS[agent].icon} <b>${esc(AGENTS[agent].name)}</b> – kører 100 % på din enhed.</p>
@@ -108,7 +121,18 @@ function renderChat() {
     conv.messages.forEach((m, i) => chat.appendChild(bubble(m, i, conv)));
   };
   draw();
-  $("#agentSel").onchange = (e) => { conv.agent = e.target.value; state.settings.agent = e.target.value; save("settings"); save("conversations"); updateHeader(); renderChatAgain(); };
+  let researchNext = false;
+  const updateChips = () => { $("#fnChips").innerHTML = researchNext ? `<span class="chip on">🔎 Undersøg aktiv <button class="x" id="rmResearch" style="padding:0 4px">✕</button></span>` : ""; const r = $("#rmResearch"); if (r) r.onclick = () => { researchNext = false; updateChips(); }; };
+  const openFunctions = () => renderFunctionSheet((pick) => {
+    if (pick.type === "agent") { conv.agent = pick.id; state.settings.agent = pick.id; save("settings"); save("conversations"); updateHeader(); renderChatAgain(); return; }
+    const id = pick.id;
+    if (id === "tegning" || id === "code") return go(id);
+    if (id === "research") { researchNext = true; updateChips(); return; }
+    if (id === "image") return $("#imgIn").click();
+    conv.messages.push({ role: "calc", calc: id, ts: Date.now() }); save("conversations"); draw(); window.scrollTo(0, document.body.scrollHeight);
+  });
+  $("#fnBtn").onclick = openFunctions;
+  $("#agentChip").onclick = openFunctions;
   $("#convSel").onchange = (e) => { if (e.target.value) { state.settings.currentConv = e.target.value; const c = state.conversations.find((x) => x.id === e.target.value); if (c?.agent) state.settings.agent = c.agent; save("settings"); updateHeader(); renderChatAgain(); } };
   $("#newConv").onclick = () => { state.settings.currentConv = null; renderChatAgain(); };
   $("#delConv").onclick = () => { if (confirm("Slet denne samtale?")) { state.conversations = state.conversations.filter((c) => c.id !== conv.id); state.settings.currentConv = null; save("conversations"); renderChatAgain(); } };
@@ -135,7 +159,8 @@ function renderChat() {
     $("#sendBtn").textContent = "■";
     let node;
     const img = pendingImg; pendingImg = null; $("#attach").innerHTML = "";
-    await sendMessage(text, { conv, image: img, onToken: () => {
+    const useResearch = researchNext; researchNext = false; updateChips();
+    await sendMessage(text, { conv, image: img, research: useResearch, onToken: () => {
       if (!node) { draw(); node = chat.lastElementChild; }
       const last = conv.messages[conv.messages.length - 1];
       node.querySelector(".content").innerHTML = md(stripActions(last.content));
@@ -149,7 +174,9 @@ function renderChat() {
 }
 function renderChatAgain() { view().innerHTML = ""; renderChat(); }
 
+let _saveT;
 function bubble(m, i, conv) {
+  if (m.role === "calc") { const host = document.createElement("div"); inlineCalc(m.calc, host, (t) => { m.result = t; clearTimeout(_saveT); _saveT = setTimeout(() => save("conversations"), 400); }); return host.firstElementChild || host; }
   const el = document.createElement("div");
   el.className = "msg " + (m.role === "user" ? "user" : "bot");
   if (m.role === "user") { el.innerHTML = (m.image ? `<img src="${m.image}" style="max-width:220px;border-radius:10px;display:block;margin-bottom:6px" />` : "") + `<span></span>`; el.querySelector("span").textContent = m.content; return el; }

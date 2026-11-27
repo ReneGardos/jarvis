@@ -205,7 +205,7 @@ export function searchMemories(q, k = 8) {
 const BASE = "Du er Jarvis, en personlig AI-assistent der kører helt lokalt på brugerens egen enhed. Svar på dansk medmindre brugeren skriver på et andet sprog. " +
   "Vær konkret og praktisk. Opfind aldrig fakta, tal eller paragraffer – hvis du ikke ved det, så sig det.";
 export const AGENTS = {
-  konstruktor: { name: "Bygningskonstruktør", icon: "📐", useKnowledge: true, tasks: true,
+  konstruktor: { name: "Bygningskonstruktør", icon: "📐", useKnowledge: true, tasks: true, calc: true,
     system: BASE + " Du er en erfaren dansk bygningskonstruktør og tømrer. Du kender BR18, tømrerfaget, materialer, konstruktioner, " +
       "byggesagsforløb, mængdeberegning, tilbud og byggeledelse. Når du henviser til krav, så angiv paragraf og kilde fra vidensbasen. " +
       "Hvis vidensbasen ikke dækker spørgsmålet, så sig at kravet skal kontrolleres på bygningsreglementet.dk. Henvis bærende konstruktioner " +

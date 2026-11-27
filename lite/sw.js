@@ -1,6 +1,6 @@
 // Service worker: gør appen installérbar og brugbar offline. AI-modellerne caches af WebLLM/transformers selv.
-const CACHE = "jarvis-lite-v2";
-const SHELL = ["./", "index.html", "style.css", "app.js", "core.js", "build.js", "voice.js", "code.js", "cad.js", "cad-ui.js", "research.js", "calc.js", "search.js", "md.js", "knowledge/br18.js",
+const CACHE = "jarvis-lite-v3";
+const SHELL = ["./", "index.html", "style.css", "app.js", "core.js", "build.js", "voice.js", "code.js", "cad.js", "cad-ui.js", "research.js", "functions.js", "calc.js", "search.js", "md.js", "knowledge/br18.js",
   "llm-worker.js", "asr-worker.js", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener("activate", (e) => {
