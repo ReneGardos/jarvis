@@ -1,0 +1,430 @@
+// Jarvis Lite – app, navigation, chat, opgaver, viden, hukommelse og indstillinger.
+import { md } from "./md.js";
+import {
+  $, $$, AGENTS, applyAction, buildContext, download, esc, exportAll, extractMemories, generate, importAll, llm, loadAll,
+  loadModel, modelCatalog, parseActions, progress, recommendedModel, save, state, stopGenerating, stripActions, toast, uid, webgpuInfo,
+} from "./core.js";
+import { renderBuild } from "./build.js";
+import { renderVoice, stopVoice } from "./voice.js";
+import { renderCode } from "./code.js";
+
+const view = () => $("#view");
+let tab = "chat";
+
+// ---------------- Navigation ----------------
+const RENDER = { chat: renderChat, voice: renderVoice, build: renderBuild, code: renderCode, know: renderKnow, tasks: renderTasks, more: renderMore };
+export function go(t) {
+  if (tab === "voice" && t !== "voice") stopVoice();
+  tab = t;
+  $$("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === t));
+  view().innerHTML = "";
+  RENDER[t]();
+  window.scrollTo(0, 0);
+}
+$("#tabs").addEventListener("click", (e) => { const b = e.target.closest("button[data-tab]"); if (b) go(b.dataset.tab); });
+$("#modelBtn").addEventListener("click", () => go("more"));
+document.addEventListener("model-changed", updateHeader);
+function updateHeader() {
+  $("#modelBtn").textContent = llm.model ? llm.model.replace(/-q4f(16|32)_1-MLC$/, "") : "Indlæs model";
+  $("#agentLabel").textContent = "· " + (AGENTS[state.settings.agent]?.name || "");
+}
+
+// ---------------- Chat ----------------
+function currentConv() {
+  let c = state.conversations.find((x) => x.id === state.settings.currentConv);
+  if (!c) {
+    c = { id: uid(), title: "Ny samtale", agent: state.settings.agent, messages: [], createdAt: Date.now() };
+    state.conversations.unshift(c); state.settings.currentConv = c.id; save("settings"); save("conversations");
+  }
+  return c;
+}
+
+const STARTERS = {
+  konstruktor: ["Hvad er kravet til U-værdi for ydervægge ved tilbygning?", "Hvor højt skal et værn ved en altan være?", "Lav en materialeliste til en 12 m² skillevæg", "Hvad skal jeg huske ved en tagudskiftning?"],
+  personal: ["Planlæg min dag", "Hjælp mig med en svær beslutning", "Hvad husker du om mig?"],
+  planning: ["Lav en ugeplan ud fra mine opgaver", "Hvad er mine vigtigste deadlines?"],
+  developer: ["Lav en hjemmeside til mit tømrerfirma", "Forklar forskellen på React og Next.js"],
+  business: ["Hvordan prissætter jeg et tilbud på en tilbygning?", "Ideer til at få flere kunder"],
+  marketing: ["Skriv en tekst til forsiden på mit tømrerfirmas hjemmeside", "Lav 5 opslag til Facebook"],
+  finance: ["Lav et budget for en tilbygning på 30 m²", "Hvordan beregner jeg dækningsbidrag?"],
+  document: ["Skriv et byggemødereferat", "Skriv et tilbud på en terrasse"],
+};
+
+export async function sendMessage(text, { conv = currentConv(), onToken } = {}) {
+  const agent = conv.agent || state.settings.agent;
+  const { messages, sources } = buildContext(agent, text, conv.messages);
+  conv.messages.push({ role: "user", content: text, ts: Date.now() });
+  if (conv.title === "Ny samtale") conv.title = text.slice(0, 50);
+  const bot = { role: "assistant", content: "", ts: Date.now(), agent, sources: sources.map((s) => ({ title: s.title, source: s.source, kind: s.kind })) };
+  conv.messages.push(bot);
+  save("conversations");
+  try {
+    bot.content = await generate(messages, { onToken: (t) => { bot.content = t; onToken?.(t); } });
+  } catch (e) {
+    bot.content = (bot.content ? bot.content + "\n\n" : "") + "⚠️ " + e.message;
+  }
+  bot.model = llm.model;
+  save("conversations");
+  extractMemories(text, bot.content);
+  return bot.content;
+}
+
+function renderChat() {
+  const conv = currentConv();
+  const agent = conv.agent || state.settings.agent;
+  view().innerHTML = `
+    <div class="toolbar">
+      <select id="agentSel">${Object.entries(AGENTS).map(([k, a]) => `<option value="${k}" ${k === agent ? "selected" : ""}>${a.icon} ${a.name}</option>`).join("")}</select>
+      <select id="convSel"><option value="">Samtaler…</option>${state.conversations.slice(0, 40).map((c) => `<option value="${c.id}" ${c.id === conv.id ? "selected" : ""}>${esc(c.title)}</option>`).join("")}</select>
+      <button class="btn sub sm" id="newConv">＋ Ny</button>
+      <button class="btn ghost sm" id="delConv">Slet</button>
+    </div>
+    ${!llm.engine ? `<div class="warnbox">Ingen AI-model er indlæst endnu. <button class="btn sm" id="loadNow">Indlæs anbefalet model</button></div>` : ""}
+    <div class="chat" id="chat"></div>
+    <form class="composer" id="composer"><div class="inner">
+      <textarea id="input" rows="1" placeholder="Skriv til ${esc(AGENTS[agent].name)}…"></textarea>
+      <button class="btn" id="sendBtn" type="submit">➤</button>
+    </div></form>`;
+  const chat = $("#chat");
+  const draw = () => {
+    chat.innerHTML = conv.messages.length ? "" : `<div class="empty"><p>${AGENTS[agent].icon} <b>${esc(AGENTS[agent].name)}</b> – kører 100 % på din enhed.</p>
+      ${(STARTERS[agent] || []).map((s) => `<button class="starter" data-s="${esc(s)}">${esc(s)}</button>`).join("")}</div>`;
+    conv.messages.forEach((m, i) => chat.appendChild(bubble(m, i, conv)));
+  };
+  draw();
+  $("#agentSel").onchange = (e) => { conv.agent = e.target.value; state.settings.agent = e.target.value; save("settings"); save("conversations"); updateHeader(); renderChatAgain(); };
+  $("#convSel").onchange = (e) => { if (e.target.value) { state.settings.currentConv = e.target.value; const c = state.conversations.find((x) => x.id === e.target.value); if (c?.agent) state.settings.agent = c.agent; save("settings"); updateHeader(); renderChatAgain(); } };
+  $("#newConv").onclick = () => { state.settings.currentConv = null; renderChatAgain(); };
+  $("#delConv").onclick = () => { if (confirm("Slet denne samtale?")) { state.conversations = state.conversations.filter((c) => c.id !== conv.id); state.settings.currentConv = null; save("conversations"); renderChatAgain(); } };
+  $("#loadNow")?.addEventListener("click", quickLoad);
+  chat.addEventListener("click", (e) => { const s = e.target.closest("[data-s]"); if (s) submit(s.dataset.s); });
+  const input = $("#input");
+  input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 160) + "px"; });
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !/Mobi/.test(navigator.userAgent)) { e.preventDefault(); submit(input.value); } });
+  $("#composer").onsubmit = (e) => { e.preventDefault(); llm.busy ? stopGenerating() : submit(input.value); };
+
+  async function submit(text) {
+    text = text.trim();
+    if (!text) return;
+    if (!llm.engine) { await quickLoad(); if (!llm.engine) return; }
+    input.value = ""; input.style.height = "auto";
+    $("#sendBtn").textContent = "■";
+    let node;
+    await sendMessage(text, { conv, onToken: () => {
+      if (!node) { draw(); node = chat.lastElementChild; }
+      const last = conv.messages[conv.messages.length - 1];
+      node.querySelector(".content").innerHTML = md(stripActions(last.content));
+      window.scrollTo(0, document.body.scrollHeight);
+    } });
+    $("#sendBtn") && ($("#sendBtn").textContent = "➤");
+    draw();
+    window.scrollTo(0, document.body.scrollHeight);
+  }
+  window.scrollTo(0, document.body.scrollHeight);
+}
+function renderChatAgain() { view().innerHTML = ""; renderChat(); }
+
+function bubble(m, i, conv) {
+  const el = document.createElement("div");
+  el.className = "msg " + (m.role === "user" ? "user" : "bot");
+  if (m.role === "user") { el.textContent = m.content; return el; }
+  const actions = parseActions(m.content);
+  el.innerHTML = `<div class="content">${md(stripActions(m.content)) || "…"}</div>
+    ${actions.map((a, j) => `<div class="action">Forslag: <b>${esc(a.tool === "task_create" ? "Opret opgave" : a.tool === "memory_save" ? "Husk" : "Tilføj til viden")}</b> – ${esc(a.title || a.content || "")}
+      ${a.due ? ` (${esc(new Date(a.due).toLocaleString("da-DK"))})` : ""} ${m.applied?.includes(j) ? `<span class="badge ok">Udført</span>` : `<button class="btn sm" data-apply="${j}">Udfør</button>`}</div>`).join("")}
+    <div class="meta">
+      ${m.sources?.length ? `<span>📚 ${m.sources.map((s) => esc(s.title.split(" – ")[0])).slice(0, 3).join(" · ")}</span>` : ""}
+      <button data-good>${m.rating === 1 ? "👍 Godt" : "👍"}</button>
+      <button data-fix>✏️ Ret svaret</button>
+      <button data-speak>🔊</button>
+    </div>`;
+  el.addEventListener("click", (e) => {
+    const ap = e.target.closest("[data-apply]");
+    if (ap) { const j = +ap.dataset.apply; toast(applyAction(actions[j])); (m.applied ||= []).push(j); save("conversations"); ap.outerHTML = `<span class="badge ok">Udført</span>`; }
+    if (e.target.closest("[data-good]")) {
+      m.rating = 1; save("conversations");
+      const q = conv.messages[i - 1]?.content || "";
+      state.feedback.push({ id: uid(), q, a: m.content, rating: 1, agent: m.agent, ts: Date.now() }); save("feedback");
+      e.target.textContent = "👍 Godt"; toast("Tak – gemt som godt eksempel til træning");
+    }
+    if (e.target.closest("[data-fix]")) correct(conv, i);
+    if (e.target.closest("[data-speak]")) speakText(stripActions(m.content));
+  });
+  return el;
+}
+
+function correct(conv, i) {
+  const q = conv.messages[i - 1]?.content || "";
+  const fixed = prompt("Skriv det korrekte svar. Jarvis bruger din rettelse fremover, når der spørges om noget lignende:", "");
+  if (!fixed?.trim()) return;
+  state.knowledge.unshift({ id: uid(), kind: "correction", title: "Rettelse: " + q.slice(0, 90), category: "Mine rettelser",
+    text: `Spørgsmål: ${q}\nKorrekt svar: ${fixed.trim()}`, source: "Din rettelse", createdAt: Date.now() });
+  state.feedback.push({ id: uid(), q, a: conv.messages[i].content, correction: fixed.trim(), rating: -1, agent: conv.messages[i].agent, ts: Date.now() });
+  save("knowledge"); save("feedback");
+  toast("✅ Lært! Rettelsen er gemt i din vidensbase");
+}
+
+export function speakText(text) {
+  const u = new SpeechSynthesisUtterance(text.replace(/[#*_`>|]/g, "").slice(0, 3000));
+  u.lang = state.settings.lang === "en" ? "en-GB" : "da-DK";
+  const v = speechSynthesis.getVoices().find((x) => x.name === state.settings.voiceName) || speechSynthesis.getVoices().find((x) => x.lang.startsWith(u.lang.slice(0, 2)));
+  if (v) u.voice = v;
+  speechSynthesis.cancel(); speechSynthesis.speak(u);
+  return u;
+}
+
+async function quickLoad() {
+  try {
+    const cat = await modelCatalog();
+    const id = state.settings.model || recommendedModel(cat);
+    if (!confirm(`Indlæs ${id}?\n\nModellen hentes én gang (ca. ${Math.round((cat.find((m) => m.id === id)?.vram || 2000) / 100) / 10} GB) og gemmes på enheden. Brug gerne Wi-Fi.`)) return;
+    await loadModel(id);
+    state.settings.model = id; save("settings");
+    toast("Model klar ✓");
+    if (tab === "chat") renderChatAgain();
+  } catch (e) { toast("⚠️ " + e.message, 6000); }
+}
+
+// ---------------- Opgaver ----------------
+function renderTasks() {
+  const draw = () => {
+    const open = state.tasks.filter((t) => !t.done).sort((a, b) => (a.priority - b.priority) || ((a.due || "9") > (b.due || "9") ? 1 : -1));
+    const done = state.tasks.filter((t) => t.done).slice(0, 20);
+    view().innerHTML = `<h2>Opgaver</h2>
+      <div class="card"><div class="row">
+        <input class="grow" id="tTitle" placeholder="Ny opgave…" />
+        <select id="tPri" style="flex:0 0 80px"><option value="1">P1</option><option value="2" selected>P2</option><option value="3">P3</option></select>
+      </div><div class="row" style="margin-top:8px">
+        <label class="grow">Frist / påmindelse<input type="datetime-local" id="tDue" /></label>
+        <button class="btn" id="tAdd" style="align-self:flex-end">Tilføj</button></div></div>
+      <div class="card">${open.length ? open.map(item).join("") : `<div class="empty">Ingen åbne opgaver 🎉</div>`}</div>
+      ${done.length ? `<h3>Udført</h3><div class="card">${done.map(item).join("")}</div>` : ""}
+      <p class="muted">Påmindelser vises, mens appen er åben. Vil du have påmindelser når appen er lukket, så tryk 📅 og læg opgaven i telefonens kalender.</p>`;
+    $("#tAdd").onclick = () => {
+      const title = $("#tTitle").value.trim(); if (!title) return;
+      state.tasks.unshift({ id: uid(), title, priority: +$("#tPri").value, due: $("#tDue").value ? new Date($("#tDue").value).toISOString() : null, done: false, createdAt: Date.now() });
+      save("tasks"); draw();
+      if (Notification?.permission === "default") Notification.requestPermission();
+    };
+    view().onclick = (e) => {
+      const id = e.target.closest("[data-id]")?.dataset.id; const t = state.tasks.find((x) => x.id === id); if (!t) return;
+      if (e.target.matches("input[type=checkbox]")) { t.done = e.target.checked; t.doneAt = Date.now(); save("tasks"); draw(); }
+      if (e.target.closest("[data-del]")) { state.tasks = state.tasks.filter((x) => x.id !== id); save("tasks"); draw(); }
+      if (e.target.closest("[data-ics]")) download(`${t.title.slice(0, 30)}.ics`, ics(t), "text/calendar");
+    };
+  };
+  const item = (t) => `<div class="item" data-id="${t.id}"><input type="checkbox" ${t.done ? "checked" : ""} style="width:auto;margin-top:4px" />
+    <div class="body"><div style="${t.done ? "text-decoration:line-through;color:var(--muted)" : ""}">${esc(t.title)}</div>
+    <div class="sub"><span class="badge ${t.priority === 1 ? "bad" : t.priority === 2 ? "warn" : ""}">P${t.priority}</span>
+    ${t.due ? `<span style="color:${!t.done && new Date(t.due) < new Date() ? "var(--bad)" : "inherit"}">${new Date(t.due).toLocaleString("da-DK", { dateStyle: "medium", timeStyle: "short" })}</span>` : ""}</div></div>
+    ${t.due ? `<button class="x" data-ics title="Læg i kalender">📅</button>` : ""}<button class="x" data-del title="Slet">✕</button></div>`;
+  draw();
+}
+
+function ics(t) {
+  const d = new Date(t.due);
+  const f = (x) => x.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  const e = new Date(d.getTime() + 30 * 60000);
+  const clean = (s) => s.replace(/[,;\\]/g, (c) => "\\" + c).replace(/\n/g, "\\n");
+  return ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Jarvis Lite//DA", "BEGIN:VEVENT", `UID:${t.id}@jarvis-lite`, `DTSTAMP:${f(new Date())}`,
+    `DTSTART:${f(d)}`, `DTEND:${f(e)}`, `SUMMARY:${clean(t.title)}`, "BEGIN:VALARM", "ACTION:DISPLAY", `DESCRIPTION:${clean(t.title)}`, "TRIGGER:-PT15M",
+    "END:VALARM", "END:VEVENT", "END:VCALENDAR"].join("\r\n");
+}
+
+// Påmindelser mens appen er åben
+setInterval(() => {
+  const now = Date.now();
+  for (const t of state.tasks) {
+    if (!t.done && t.due && !t.reminded && new Date(t.due).getTime() <= now) {
+      t.reminded = true; save("tasks");
+      toast("⏰ " + t.title, 8000);
+      if (Notification?.permission === "granted") new Notification("Jarvis påmindelse", { body: t.title, icon: "icons/icon-192.png" });
+    }
+  }
+}, 30000);
+
+// ---------------- Viden (træning) ----------------
+function renderKnow() {
+  let filter = "";
+  const draw = () => {
+    const cats = [...new Set(state.knowledge.map((k) => k.category || "Andet"))];
+    const list = state.knowledge.filter((k) => !filter || (k.category || "Andet") === filter);
+    view().innerHTML = `<h2>Viden – træn din Jarvis</h2>
+      <p class="muted">Alt her bruges af agenterne, når de svarer, og deres svar henviser til kilderne. Dine egne fakta og rettelser vægtes højest.
+      Knappen ✏️ under et svar retter Jarvis, og rettelsen bruges næste gang.</p>
+      <div class="card"><h3 style="margin-top:0">Lær Jarvis noget nyt</h3>
+        <input id="kTitle" placeholder="Emne, fx 'Vores standard for terrasser'" />
+        <textarea id="kText" rows="4" style="margin-top:8px" placeholder="Skriv viden, regler, priser, egne erfaringer, arbejdsgange…"></textarea>
+        <div class="row" style="margin-top:8px"><input id="kCat" class="grow" placeholder="Kategori (fx Tilbud, Materialer, BR18)" list="cats" />
+          <datalist id="cats">${cats.map((c) => `<option value="${esc(c)}">`).join("")}</datalist>
+          <button class="btn" id="kAdd">Gem viden</button></div>
+        <div class="row" style="margin-top:10px"><label class="btn sub" style="text-align:center">📄 Upload dokumenter (PDF, Word, TXT, MD, CSV)
+          <input type="file" id="kFile" multiple accept=".pdf,.docx,.txt,.md,.csv,.json" hidden /></label></div>
+      </div>
+      <div class="segment"><button data-f="" class="${!filter ? "on" : ""}">Alle (${state.knowledge.length})</button>
+        ${cats.map((c) => `<button data-f="${esc(c)}" class="${filter === c ? "on" : ""}">${esc(c)}</button>`).join("")}</div>
+      <div class="card">${list.map((k) => `<div class="item" data-id="${k.id}"><div class="body">
+        <div><span class="badge ${k.kind === "correction" ? "warn" : k.kind === "seed" ? "acc" : "ok"}">${{ seed: "Startviden", fact: "Egen viden", doc: "Dokument", correction: "Rettelse" }[k.kind] || k.kind}</span>
+          <b>${esc(k.title)}</b>${k.disabled ? ` <span class="badge bad">slået fra</span>` : ""}</div>
+        <div class="sub">${esc(k.text.slice(0, 220))}${k.text.length > 220 ? "…" : ""}</div>
+        ${k.source ? `<div class="sub">Kilde: ${/^https?:/.test(k.source) ? `<a href="${esc(k.source)}" target="_blank" rel="noopener">${esc(k.source)}</a>` : esc(k.source)}</div>` : ""}</div>
+        <button class="x" data-edit title="Redigér">✏️</button><button class="x" data-toggle title="Slå til/fra">${k.disabled ? "▶️" : "⏸"}</button><button class="x" data-del title="Slet">✕</button></div>`).join("") || `<div class="empty">Ingen viden i denne kategori.</div>`}</div>
+      <div class="card"><h3 style="margin-top:0">Eksportér træningsdata</h3>
+        <p class="muted">Dine rettelser og 👍-svar kan eksporteres som træningsdata (JSONL). Med dem kan du senere lave rigtig finjustering (LoRA) af en model på din egen server, så den lærer dine svar direkte.</p>
+        <button class="btn sub" id="kExport">⬇️ Træningsdata (${state.feedback.length} eksempler)</button>
+        <button class="btn sub" id="kExportKb">⬇️ Vidensbase (JSON)</button></div>`;
+    $("#kAdd").onclick = () => {
+      const title = $("#kTitle").value.trim(), text = $("#kText").value.trim();
+      if (!title || !text) return toast("Skriv emne og tekst");
+      state.knowledge.unshift({ id: uid(), kind: "fact", title, text, category: $("#kCat").value.trim() || "Egen viden", source: "Dig", createdAt: Date.now() });
+      save("knowledge"); toast("✅ Jarvis har lært det"); draw();
+    };
+    $("#kFile").onchange = async (e) => {
+      for (const f of e.target.files) {
+        try {
+          const text = await fileToText(f);
+          if (!text.trim()) throw new Error("ingen tekst fundet");
+          state.knowledge.unshift({ id: uid(), kind: "doc", title: f.name, text, category: "Dokumenter", source: f.name, createdAt: Date.now() });
+          toast(`📄 ${f.name}: ${Math.round(text.length / 1000)}k tegn lært`);
+        } catch (err) { toast(`⚠️ ${f.name}: ${err.message}`, 6000); }
+      }
+      save("knowledge"); draw();
+    };
+    $("#kExport").onclick = () => download("jarvis-traening.jsonl", trainingJsonl(), "application/jsonl");
+    $("#kExportKb").onclick = () => download("jarvis-vidensbase.json", JSON.stringify(state.knowledge, null, 2), "application/json");
+    view().onclick = (e) => {
+      const f = e.target.closest("[data-f]"); if (f) { filter = f.dataset.f; draw(); return; }
+      const id = e.target.closest("[data-id]")?.dataset.id; const k = state.knowledge.find((x) => x.id === id); if (!k) return;
+      if (e.target.closest("[data-del]") && confirm("Slet denne viden?")) { state.knowledge = state.knowledge.filter((x) => x.id !== id); save("knowledge"); draw(); }
+      if (e.target.closest("[data-toggle]")) { k.disabled = !k.disabled; save("knowledge"); draw(); }
+      if (e.target.closest("[data-edit]")) { const t = prompt("Redigér teksten:", k.text); if (t !== null) { k.text = t; if (k.kind === "seed") k.kind = "fact"; save("knowledge"); draw(); } }
+    };
+  };
+  draw();
+}
+
+function trainingJsonl() {
+  const sys = AGENTS.konstruktor.system;
+  return state.feedback.filter((f) => f.q && (f.correction || f.rating === 1))
+    .map((f) => JSON.stringify({ messages: [{ role: "system", content: (AGENTS[f.agent] || AGENTS.konstruktor).system || sys },
+      { role: "user", content: f.q }, { role: "assistant", content: f.correction || f.a }] })).join("\n");
+}
+
+async function fileToText(f) {
+  const ext = f.name.split(".").pop().toLowerCase();
+  if (ext === "pdf") {
+    const pdfjs = await import("https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs");
+    pdfjs.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
+    const doc = await pdfjs.getDocument({ data: await f.arrayBuffer() }).promise;
+    let out = "";
+    for (let p = 1; p <= doc.numPages; p++) {
+      const page = await doc.getPage(p);
+      const tc = await page.getTextContent();
+      out += `\n[Side ${p}]\n` + tc.items.map((i) => i.str + (i.hasEOL ? "\n" : " ")).join("");
+      progress(p / doc.numPages, `Læser ${f.name} – side ${p}/${doc.numPages}`);
+    }
+    progress(null);
+    return out;
+  }
+  if (ext === "docx") {
+    const { default: mammoth } = await import("https://esm.sh/mammoth@1.8.0");
+    return (await mammoth.extractRawText({ arrayBuffer: await f.arrayBuffer() })).value;
+  }
+  return await f.text();
+}
+
+// ---------------- Mere: model, hukommelse, indstillinger, backup ----------------
+async function renderMore() {
+  const gpu = await webgpuInfo();
+  view().innerHTML = `<h2>Indstillinger</h2>
+    <div class="card"><h3 style="margin-top:0">AI-model (kører på din enhed)</h3>
+      ${gpu.ok ? `<span class="badge ok">WebGPU OK</span>` : `<div class="warnbox">${esc(gpu.reason)}</div>`}
+      <div id="models" class="muted">Henter modelkatalog…</div>
+      <p class="muted">Første gang hentes modellen (0,5–5 GB) og gemmes i browseren – derefter kører alt offline. Større model = klogere, men langsommere og kræver mere hukommelse. Til kode: vælg en Coder-model i fanen Kode.</p></div>
+    <div class="card"><h3 style="margin-top:0">Hukommelse</h3>
+      <label class="row" style="display:flex;gap:8px;align-items:center;color:var(--text)"><input type="checkbox" id="autoMem" style="width:auto" ${state.settings.autoMemory ? "checked" : ""}/> Lær automatisk om mig fra samtaler</label>
+      <div class="row" style="margin-top:8px"><input id="memNew" class="grow" placeholder="Tilføj noget Jarvis skal huske om dig…" /><button class="btn" id="memAdd">Gem</button></div>
+      <div id="mems"></div></div>
+    <div class="card"><h3 style="margin-top:0">Stemme</h3>
+      <label>Sprog<select id="lang"><option value="da">Dansk</option><option value="en">English</option></select></label>
+      <label style="margin-top:8px">Oplæsningsstemme (enhedens egne)<select id="voiceSel"></select></label>
+      <label style="margin-top:8px">Talegenkendelse (lokal Whisper)<select id="whisper">
+        <option value="Xenova/whisper-tiny">Whisper tiny – hurtigst (≈ 40 MB)</option>
+        <option value="Xenova/whisper-base">Whisper base – anbefalet (≈ 80 MB)</option>
+        <option value="Xenova/whisper-small">Whisper small – bedst dansk (≈ 250 MB)</option></select></label></div>
+    <div class="card"><h3 style="margin-top:0">Backup</h3>
+      <p class="muted">Alt ligger kun på denne enhed. Tag backup jævnligt, og flyt data mellem telefon og computer med eksport/import.</p>
+      <div class="row"><button class="btn sub" id="exp">⬇️ Eksportér alt</button><label class="btn sub" style="text-align:center">⬆️ Importér<input type="file" id="imp" accept=".json" hidden /></label>
+      <button class="btn danger" id="wipe">Slet alle data</button></div></div>
+    <div class="card"><h3 style="margin-top:0">Installér som app</h3>
+      <p class="muted"><b>iPhone/iPad:</b> Safari → Del-knappen → “Føj til hjemmeskærm”.<br><b>Android:</b> Chrome → ⋮ → “Installer app”.<br><b>Computer:</b> Chrome/Edge → installér-ikonet i adresselinjen.</p>
+      <p class="muted">Privatliv: Ingen data sendes nogen steder hen. Kun programfiler og AI-modeller hentes ved første brug (fra GitHub Pages, jsDelivr og Hugging Face).</p></div>`;
+
+  // Modeller
+  try {
+    const cat = await modelCatalog();
+    const rec = recommendedModel(cat);
+    $("#models").innerHTML = cat.filter((m) => m.kind === "chat").map((m) => `<div class="item"><div class="body"><b>${esc(m.id.replace(/-q4f(16|32)_1-MLC$/, ""))}</b>
+      ${m.id === rec ? `<span class="badge acc">anbefalet</span>` : ""}${m.id === llm.model ? `<span class="badge ok">indlæst</span>` : ""}
+      <div class="sub">kræver ca. ${(m.vram / 1000).toFixed(1)} GB grafikhukommelse</div></div>
+      <button class="btn sm ${m.id === llm.model ? "sub" : ""}" data-load="${m.id}" ${m.id === llm.model ? "disabled" : ""}>${m.id === llm.model ? "Aktiv" : "Brug"}</button></div>`).join("");
+    $("#models").onclick = async (e) => {
+      const b = e.target.closest("[data-load]"); if (!b) return;
+      b.disabled = true; b.textContent = "Henter…";
+      try { await loadModel(b.dataset.load); state.settings.model = b.dataset.load; save("settings"); toast("Model klar ✓"); renderMore(); }
+      catch (err) { toast("⚠️ " + err.message, 7000); b.disabled = false; b.textContent = "Brug"; }
+    };
+  } catch (e) { $("#models").textContent = "Kunne ikke hente modelkatalog (kræver internet første gang): " + e.message; }
+
+  // Hukommelse
+  const drawMems = () => {
+    $("#mems").innerHTML = state.memories.length ? state.memories.map((m) => `<div class="item" data-id="${m.id}"><div class="body">${esc(m.content)}
+      <div class="sub">${m.auto ? "lært automatisk" : "tilføjet af dig"} · ${new Date(m.createdAt).toLocaleDateString("da-DK")}</div></div>
+      <button class="x" data-pin title="Fastgør">${m.pinned ? "📌" : "📍"}</button><button class="x" data-edit>✏️</button><button class="x" data-del>✕</button></div>`).join("")
+      : `<div class="empty">Jarvis husker ikke noget om dig endnu.</div>`;
+  };
+  drawMems();
+  $("#mems").onclick = (e) => {
+    const id = e.target.closest("[data-id]")?.dataset.id; const m = state.memories.find((x) => x.id === id); if (!m) return;
+    if (e.target.closest("[data-del]")) state.memories = state.memories.filter((x) => x.id !== id);
+    if (e.target.closest("[data-pin]")) m.pinned = !m.pinned;
+    if (e.target.closest("[data-edit]")) { const t = prompt("Redigér:", m.content); if (t) m.content = t; }
+    save("memories"); drawMems();
+  };
+  $("#memAdd").onclick = () => { const c = $("#memNew").value.trim(); if (!c) return; state.memories.unshift({ id: uid(), content: c, importance: 0.8, createdAt: Date.now() }); save("memories"); $("#memNew").value = ""; drawMems(); };
+  $("#autoMem").onchange = (e) => { state.settings.autoMemory = e.target.checked; save("settings"); };
+
+  // Stemme
+  $("#lang").value = state.settings.lang; $("#whisper").value = state.settings.whisper;
+  $("#lang").onchange = (e) => { state.settings.lang = e.target.value; save("settings"); fillVoices(); };
+  $("#whisper").onchange = (e) => { state.settings.whisper = e.target.value; save("settings"); };
+  const fillVoices = () => {
+    const vs = speechSynthesis.getVoices().filter((v) => v.lang.startsWith(state.settings.lang));
+    $("#voiceSel").innerHTML = `<option value="">Standard</option>` + vs.map((v) => `<option ${v.name === state.settings.voiceName ? "selected" : ""}>${esc(v.name)}</option>`).join("");
+  };
+  fillVoices(); speechSynthesis.onvoiceschanged = fillVoices;
+  $("#voiceSel").onchange = (e) => { state.settings.voiceName = e.target.value; save("settings"); speakText(state.settings.lang === "da" ? "Hej, jeg er Jarvis." : "Hello, I am Jarvis."); };
+
+  // Backup
+  $("#exp").onclick = async () => download(`jarvis-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(await exportAll()), "application/json");
+  $("#imp").onchange = async (e) => {
+    try { await importAll(JSON.parse(await e.target.files[0].text())); toast("Backup gendannet ✓"); renderMore(); } catch (err) { toast("⚠️ " + err.message); }
+  };
+  $("#wipe").onclick = async () => {
+    if (prompt("Skriv SLET for at slette alle data på denne enhed") !== "SLET") return;
+    indexedDB.deleteDatabase("jarvis-lite"); location.reload();
+  };
+}
+
+// ---------------- Start ----------------
+(async function boot() {
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+  await loadAll();
+  updateHeader();
+  go("chat");
+  // Indlæs sidst brugte model automatisk (den ligger allerede i cachen)
+  if (state.settings.model) {
+    const gpu = await webgpuInfo();
+    if (gpu.ok) loadModel(state.settings.model).then(() => tab === "chat" && renderChatAgain()).catch((e) => toast("⚠️ " + e.message, 6000));
+  }
+})();
