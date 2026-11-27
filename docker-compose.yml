@@ -1,0 +1,94 @@
+# Jarvis – komplet stak. Start: docker compose up -d
+# Alle tjenester binder kun til localhost; eksponering udadtil sker via Caddy (HTTPS).
+name: jarvis
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: jarvis
+      POSTGRES_USER: jarvis
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Sæt POSTGRES_PASSWORD i .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jarvis -d jarvis"]
+      interval: 10s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    restart: unless-stopped
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:?Sæt QDRANT_API_KEY i .env}
+    volumes:
+      - qdrant:/qdrant/storage
+      - ./data/backups/qdrant:/qdrant/snapshots
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama:/root/.ollama
+    # Fjern kommentarerne for NVIDIA-GPU:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    volumes:
+      - ./infra/searxng:/etc/searxng
+    environment:
+      SEARXNG_BASE_URL: http://searxng:8080/
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://jarvis:${POSTGRES_PASSWORD}@postgres:5432/jarvis
+      QDRANT_URL: http://qdrant:6333
+      OLLAMA_URL: http://ollama:11434
+      SEARXNG_URL: http://searxng:8080
+    volumes:
+      - ./data/uploads:/data/uploads
+      - ./data/voice-models:/data/voice-models
+      - ./data/backups:/data/backups
+      # Projektmapper AI'en må arbejde i (skrivebeskyttet som standard):
+      - ${WORKSPACE_HOST_PATH:-./data/workspace}:/workspace
+    depends_on:
+      postgres: { condition: service_healthy }
+      qdrant: { condition: service_started }
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL-http://localhost:8000}
+    restart: unless-stopped
+    depends_on: [backend]
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    profiles: ["https"]
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy:/data
+    environment:
+      JARVIS_DOMAIN: ${JARVIS_DOMAIN:-jarvis.local}
+
+volumes:
+  pgdata:
+  qdrant:
+  ollama:
+  caddy:
