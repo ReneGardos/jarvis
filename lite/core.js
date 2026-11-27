@@ -11,22 +11,35 @@ export { esc } from "./md.js";
 // ---------------- Lagring ----------------
 const DB_NAME = "jarvis-lite";
 let dbp;
+// Reserve-lager i hukommelsen, hvis IndexedDB er utilgængelig (sker fx på iOS i private mode / lige efter installation).
+// Så kan appen altid starte og bruges – data gemmes bare ikke på disk i den situation.
+const memStore = {};
+let dbFailed = false;
 function db() {
+  if (dbFailed || typeof indexedDB === "undefined") return Promise.reject(new Error("IndexedDB utilgængelig"));
   dbp ||= new Promise((res, rej) => {
-    const r = indexedDB.open(DB_NAME, 1);
+    let r;
+    try { r = indexedDB.open(DB_NAME, 1); } catch (e) { return rej(e); }
     r.onupgradeneeded = () => r.result.createObjectStore("kv");
     r.onsuccess = () => res(r.result);
     r.onerror = () => rej(r.error);
-  });
+    r.onblocked = () => rej(new Error("IndexedDB blokeret"));
+    setTimeout(() => rej(new Error("IndexedDB timeout")), 3000); // iOS kan hænge – giv aldrig opstarten dødvande
+  }).catch((e) => { dbFailed = true; dbp = null; throw e; });
   return dbp;
 }
 async function kvGet(key) {
-  const d = await db();
-  return new Promise((res, rej) => { const t = d.transaction("kv").objectStore("kv").get(key); t.onsuccess = () => res(t.result); t.onerror = () => rej(t.error); });
+  try {
+    const d = await db();
+    return await new Promise((res, rej) => { const t = d.transaction("kv").objectStore("kv").get(key); t.onsuccess = () => res(t.result); t.onerror = () => rej(t.error); });
+  } catch { return memStore[key]; }
 }
 async function kvSet(key, val) {
-  const d = await db();
-  return new Promise((res, rej) => { const t = d.transaction("kv", "readwrite"); t.objectStore("kv").put(val, key); t.oncomplete = res; t.onerror = () => rej(t.error); });
+  memStore[key] = val; // altid i hukommelsen
+  try {
+    const d = await db();
+    await new Promise((res, rej) => { const t = d.transaction("kv", "readwrite"); t.objectStore("kv").put(val, key); t.oncomplete = res; t.onerror = () => rej(t.error); });
+  } catch { /* disk utilgængelig – data lever videre i hukommelsen */ }
 }
 
 export const KEYS = ["settings", "conversations", "memories", "tasks", "knowledge", "feedback", "projects"];

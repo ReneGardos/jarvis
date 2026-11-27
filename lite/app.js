@@ -266,16 +266,21 @@ export function speakText(text) {
   return u;
 }
 
+let _loading = false;
 async function quickLoad() {
+  if (_loading || llm.engine) return;
+  _loading = true;
   try {
     const cat = await modelCatalog();
     const id = state.settings.model || recommendedModel(cat);
-    if (!confirm(`Indlæs ${id}?\n\nModellen hentes én gang (ca. ${Math.round((cat.find((m) => m.id === id)?.vram || 2000) / 100) / 10} GB) og gemmes på enheden. Brug gerne Wi-Fi.`)) return;
+    const gb = Math.round((cat.find((m) => m.id === id)?.vram || 2000) / 100) / 10;
+    toast(`Henter Jarvis-model (~${gb} GB, kun første gang)…`, 5000);
     await loadModel(id);
     state.settings.model = id; save("settings");
-    toast("Model klar ✓");
+    toast("Jarvis er klar ✓");
     if (tab === "chat") renderChatAgain();
-  } catch (e) { toast("⚠️ " + e.message, 6000); }
+  } catch (e) { toast("⚠️ " + e.message, 7000); }
+  finally { _loading = false; }
 }
 
 // ---------------- Opgaver ----------------
@@ -428,7 +433,6 @@ async function fileToText(f) {
 
 // ---------------- Mere: model, hukommelse, indstillinger, backup ----------------
 async function renderMore() {
-  const gpu = await webgpuInfo();
   const prof = state.settings.profile || {};
   view().innerHTML = `<h2>Indstillinger</h2>
     <div class="card"><h3 style="margin-top:0">Om mig – så Jarvis kender dig</h3>
@@ -441,8 +445,16 @@ async function renderMore() {
       <button class="btn" id="pSave" style="margin-top:8px">Gem profil</button>
       <p class="muted" style="font-size:12px">Bruges i alle samtaler. Ligger kun på din enhed.</p>
     </div>
+    <div class="card"><h3 style="margin-top:0">Træn Jarvis med din viden</h3>
+      <p class="muted" style="font-size:12.5px">Lær Jarvis dine regler, priser, fremgangsmåder og erfaringer. Det bruges aktivt, når den svarer – og vægtes højere end dens startviden.</p>
+      <input id="tgTitle" placeholder="Emne, fx 'Min standardpris på tagarbejde'" />
+      <textarea id="tgText" rows="3" style="margin-top:8px" placeholder="Skriv viden, regler, priser, arbejdsgange, erfaringer…"></textarea>
+      <div class="row" style="margin-top:8px"><button class="btn" id="tgSave">Gem viden</button>
+        <button class="btn sub" id="tgOpen">📚 Åbn vidensbank & upload dokumenter</button></div>
+      <div id="tgList" class="muted" style="margin-top:8px"></div>
+    </div>
     <div class="card"><h3 style="margin-top:0">AI-model (kører på din enhed)</h3>
-      ${gpu.ok ? `<span class="badge ok">WebGPU OK</span>` : `<div class="warnbox">${esc(gpu.reason)}</div>`}
+      <div id="gpuBadge"></div>
       <div id="models" class="muted">Henter modelkatalog…</div>
       <p class="muted">Første gang hentes modellen (0,5–5 GB) og gemmes i browseren – derefter kører alt offline. Større model = klogere, men langsommere og kræver mere hukommelse. Til kode: vælg en Coder-model i fanen Kode.</p></div>
     <div class="card"><h3 style="margin-top:0">Hukommelse</h3>
@@ -476,21 +488,27 @@ async function renderMore() {
       <p class="muted"><b>iPhone/iPad:</b> Safari → Del-knappen → “Føj til hjemmeskærm”.<br><b>Android:</b> Chrome → ⋮ → “Installer app”.<br><b>Computer:</b> Chrome/Edge → installér-ikonet i adresselinjen.</p>
       <p class="muted">Privatliv: Ingen data sendes nogen steder hen. Kun programfiler og AI-modeller hentes ved første brug (fra GitHub Pages, jsDelivr og Hugging Face).</p></div>`;
 
-  // Modeller
-  try {
-    const cat = await modelCatalog();
-    const rec = recommendedModel(cat);
-    $("#models").innerHTML = cat.filter((m) => m.kind === "chat").map((m) => `<div class="item"><div class="body"><b>${esc(m.id.replace(/-q4f(16|32)_1-MLC$/, ""))}</b>
-      ${m.id === rec ? `<span class="badge acc">anbefalet</span>` : ""}${m.id === llm.model ? `<span class="badge ok">indlæst</span>` : ""}
-      <div class="sub">kræver ca. ${(m.vram / 1000).toFixed(1)} GB grafikhukommelse</div></div>
-      <button class="btn sm ${m.id === llm.model ? "sub" : ""}" data-load="${m.id}" ${m.id === llm.model ? "disabled" : ""}>${m.id === llm.model ? "Aktiv" : "Brug"}</button></div>`).join("");
-    $("#models").onclick = async (e) => {
-      const b = e.target.closest("[data-load]"); if (!b) return;
-      b.disabled = true; b.textContent = "Henter…";
-      try { await loadModel(b.dataset.load); state.settings.model = b.dataset.load; save("settings"); toast("Model klar ✓"); renderMore(); }
-      catch (err) { toast("⚠️ " + err.message, 7000); b.disabled = false; b.textContent = "Brug"; }
-    };
-  } catch (e) { $("#models").textContent = "Kunne ikke hente modelkatalog (kræver internet første gang): " + e.message; }
+  // Modeller – hentes uafhængigt (fire-and-forget), så de øvrige knapper ALTID virker med det samme,
+  // også hvis modelkataloget er langsomt eller utilgængeligt.
+  (async () => {
+    try {
+      const gpu = await webgpuInfo();
+      const badge = $("#gpuBadge"); if (badge) badge.innerHTML = gpu.ok ? `<span class="badge ok">WebGPU OK</span>` : `<div class="warnbox">${esc(gpu.reason)}</div>`;
+      const cat = await modelCatalog();
+      const rec = recommendedModel(cat);
+      if (!$("#models")) return;
+      $("#models").innerHTML = cat.filter((m) => m.kind === "chat").map((m) => `<div class="item"><div class="body"><b>${esc(m.id.replace(/-q4f(16|32)_1-MLC$/, ""))}</b>
+        ${m.id === rec ? `<span class="badge acc">anbefalet</span>` : ""}${m.id === llm.model ? `<span class="badge ok">indlæst</span>` : ""}
+        <div class="sub">kræver ca. ${(m.vram / 1000).toFixed(1)} GB grafikhukommelse</div></div>
+        <button class="btn sm ${m.id === llm.model ? "sub" : ""}" data-load="${m.id}" ${m.id === llm.model ? "disabled" : ""}>${m.id === llm.model ? "Aktiv" : "Brug"}</button></div>`).join("");
+      $("#models").onclick = async (e) => {
+        const b = e.target.closest("[data-load]"); if (!b) return;
+        b.disabled = true; b.textContent = "Henter…";
+        try { await loadModel(b.dataset.load); state.settings.model = b.dataset.load; save("settings"); toast("Model klar ✓"); renderMore(); }
+        catch (err) { toast("⚠️ " + err.message, 7000); b.disabled = false; b.textContent = "Brug"; }
+      };
+    } catch (e) { if ($("#models")) $("#models").textContent = "Kunne ikke hente modelkatalog (kræver internet første gang): " + e.message; }
+  })();
 
   // Hukommelse
   const drawMems = () => {
@@ -510,6 +528,10 @@ async function renderMore() {
   $("#memAdd").onclick = () => { const c = $("#memNew").value.trim(); if (!c) return; state.memories.unshift({ id: uid(), content: c, importance: 0.8, createdAt: Date.now() }); save("memories"); $("#memNew").value = ""; drawMems(); };
   $("#autoMem").onchange = (e) => { state.settings.autoMemory = e.target.checked; save("settings"); };
   $("#pSave").onclick = () => { state.settings.profile = { navn: $("#pNavn").value.trim(), firma: $("#pFirma").value.trim(), om: $("#pOm").value.trim() }; save("settings"); toast("Profil gemt ✓ – Jarvis kender dig nu"); };
+  const drawTg = () => { const own = state.knowledge.filter((k) => k.kind !== "seed"); $("#tgList").innerHTML = own.length ? `Du har lært Jarvis ${own.length} ting. Nyeste: ${esc((own[0].title || "").slice(0, 60))}` : "Du har ikke lært Jarvis noget endnu."; };
+  drawTg();
+  $("#tgSave").onclick = () => { const t = $("#tgTitle").value.trim(), x = $("#tgText").value.trim(); if (!t || !x) return toast("Skriv både emne og tekst"); state.knowledge.unshift({ id: uid(), kind: "fact", title: t, text: x, category: "Egen viden", source: "Dig", createdAt: Date.now() }); save("knowledge"); $("#tgTitle").value = ""; $("#tgText").value = ""; toast("✅ Jarvis har lært det"); drawTg(); };
+  $("#tgOpen").onclick = () => go("know");
 
   // Stemme
   $("#lang").value = state.settings.lang; $("#whisper").value = state.settings.whisper;
@@ -547,14 +569,26 @@ async function renderMore() {
 }
 
 // ---------------- Start ----------------
+function showFatal(msg) {
+  let bar = document.getElementById("fatalBar");
+  if (!bar) { bar = document.createElement("div"); bar.id = "fatalBar"; bar.className = "warnbox"; bar.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:999;margin:0;border-radius:0;font-size:12.5px"; document.body.appendChild(bar); }
+  bar.textContent = "⚠️ " + String(msg).slice(0, 200);
+}
+addEventListener("error", (e) => { if (e.message && !/ResizeObserver|Script error/.test(e.message)) console.warn("fejl:", e.message); });
+
+async function autoStartModel() {
+  if (llm.engine || _loading) return;
+  const gpu = await webgpuInfo();
+  if (!gpu.ok) return; // hero viser kompatibilitetsbesked
+  // Spar på mobildata: hent kun automatisk hvis data-saver er slået fra; ellers venter vi på ét tryk.
+  if (navigator.connection?.saveData) { if (tab === "chat") renderChatAgain(); return; }
+  await quickLoad();
+}
+
 (async function boot() {
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
-  await loadAll();
-  updateHeader();
-  go("chat");
-  // Indlæs sidst brugte model automatisk (den ligger allerede i cachen)
-  if (state.settings.model) {
-    const gpu = await webgpuInfo();
-    if (gpu.ok) loadModel(state.settings.model).then(() => tab === "chat" && renderChatAgain()).catch((e) => toast("⚠️ " + e.message, 6000));
-  }
+  try { if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {}); } catch {}
+  try { await loadAll(); } catch (e) { console.warn("loadAll:", e); }
+  try { updateHeader(); } catch (e) { console.warn(e); }
+  try { go("chat"); } catch (e) { showFatal("Kunne ikke starte: " + e.message); return; }
+  autoStartModel().catch((e) => console.warn("autostart:", e));
 })();
