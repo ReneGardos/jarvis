@@ -128,12 +128,24 @@ export async function modelCatalog() {
   return [...pick(PREFERRED, "chat"), ...pick(CODER, "code")];
 }
 
-export function recommendedModel(cat, kind = "chat") {
-  const mem = navigator.deviceMemory || 4; // GB (afrundet, kun Chrome)
-  const mobile = /Android|iPhone|iPad/i.test(navigator.userAgent);
-  const budget = mobile ? 2500 : mem >= 8 ? 6000 : 3500;
-  const list = cat.filter((m) => m.kind === kind);
-  return (list.find((m) => m.vram && m.vram <= budget) || list[list.length - 1] || {}).id || "";
+export const isMobile = () => typeof navigator !== "undefined" &&
+  (/Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "") || (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform || "")));
+
+export function recommendedModel(cat, kind = "chat", { maxVram } = {}) {
+  const mem = (typeof navigator !== "undefined" && navigator.deviceMemory) || 4; // GB (afrundet, kun Chrome)
+  // Telefoner har stramme WebGPU-hukommelsesgrænser – vælg en lille model, så Safari ikke crasher.
+  const budget = maxVram || (isMobile() ? 1500 : mem >= 8 ? 6000 : 3500);
+  const list = cat.filter((m) => m.kind === kind).slice().sort((a, b) => (a.vram || 0) - (b.vram || 0));
+  // Største model der er inden for budgettet; ellers den mindste tilgængelige.
+  const fit = list.filter((m) => m.vram && m.vram <= budget);
+  return ((fit.length ? fit[fit.length - 1] : list[0]) || {}).id || "";
+}
+
+/** Næste mindre model end den givne (bruges til automatisk nedgradering efter et crash). */
+export function smallerModel(cat, id, kind = "chat") {
+  const list = cat.filter((m) => m.kind === kind).slice().sort((a, b) => (a.vram || 0) - (b.vram || 0));
+  const cur = list.findIndex((m) => m.id === id);
+  return (cur > 0 ? list[cur - 1] : list[0] || {}).id || "";
 }
 
 export async function loadModel(modelId) {

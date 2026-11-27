@@ -2,7 +2,7 @@
 import { md } from "./md.js";
 import {
   $, $$, AGENTS, applyAction, buildContext, download, esc, exportAll, extractMemories, generate, importAll, llm, loadAll,
-  loadModel, modelCatalog, parseActions, progress, recommendedModel, save, state, stopGenerating, stripActions, toast, uid, webgpuInfo,
+  isMobile, loadModel, modelCatalog, parseActions, progress, recommendedModel, save, smallerModel, state, stopGenerating, stripActions, toast, uid, webgpuInfo,
 } from "./core.js";
 import { renderBuild } from "./build.js";
 import { renderDrawing } from "./cad-ui.js";
@@ -12,6 +12,9 @@ import { gatherSources, sourcesPrompt, cvr, wikipedia } from "./research.js";
 import { renderFunctionSheet, inlineCalc, runCalcTools, calcToolInstructions } from "./functions.js";
 
 const view = () => $("#view");
+const lsGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+const lsDel = (k) => { try { localStorage.removeItem(k); } catch {} };
 let tab = "chat";
 
 // ---------------- Navigation ----------------
@@ -127,7 +130,8 @@ function renderChat() {
         <div class="hero-title">${hej}${navn ? ", " + esc(navn) : ""}</div>
         <div class="hero-sub">${AGENTS[agent].icon} ${esc(AGENTS[agent].name)} · kører 100&nbsp;% privat på din enhed</div>
         ${noGpu ? `<div class="warnbox" style="margin-top:14px;text-align:left">Din browser mangler WebGPU, så AI-modellen kan ikke køre. Brug Chrome/Edge eller Safari på iOS&nbsp;26+/macOS&nbsp;26+.</div>`
-          : !llm.engine ? `<button class="btn" id="heroLoad" style="margin-top:16px">⚡ Tænd Jarvis (hent model)</button>` : ""}
+          : !llm.engine ? `<button class="btn" id="heroLoad" style="margin-top:16px">⚡ Start Jarvis</button>
+             <div class="muted" style="font-size:11.5px;margin-top:6px">Henter en lille, stabil model første gang (~1 GB). Kun på Wi-Fi.</div>` : ""}
         <div class="hero-chips">${(STARTERS[agent] || []).map((s) => `<button class="starter" data-s="${esc(s)}">${esc(s)}</button>`).join("")}</div>
         <div class="hero-hint muted">Tryk <b>＋</b> for funktioner: tegning, kode, beregnere, undersøg, vejr…</div>
       </div>`;
@@ -272,14 +276,18 @@ async function quickLoad() {
   _loading = true;
   try {
     const cat = await modelCatalog();
-    const id = state.settings.model || recommendedModel(cat);
+    let id = state.settings.model || recommendedModel(cat);
+    const crashed = lsGet("jarvis_crashed");
+    if (crashed) { const smaller = smallerModel(cat, crashed); if (smaller) id = smaller; lsDel("jarvis_crashed"); toast("Sidste model var for tung – vælger en mindre og mere stabil.", 5000); }
     const gb = Math.round((cat.find((m) => m.id === id)?.vram || 2000) / 100) / 10;
-    toast(`Henter Jarvis-model (~${gb} GB, kun første gang)…`, 5000);
+    toast(`Henter Jarvis-model (~${gb} GB, kun første gang)…`, 6000);
+    lsSet("jarvis_loading", id); // hvis fanen crasher under download, husker vi det og nedgraderer næste gang
     await loadModel(id);
+    lsDel("jarvis_loading");
     state.settings.model = id; save("settings");
     toast("Jarvis er klar ✓");
     if (tab === "chat") renderChatAgain();
-  } catch (e) { toast("⚠️ " + e.message, 7000); }
+  } catch (e) { lsDel("jarvis_loading"); toast("⚠️ " + e.message, 7000); }
   finally { _loading = false; }
 }
 
@@ -579,13 +587,16 @@ addEventListener("error", (e) => { if (e.message && !/ResizeObserver|Script erro
 async function autoStartModel() {
   if (llm.engine || _loading) return;
   const gpu = await webgpuInfo();
-  if (!gpu.ok) return; // hero viser kompatibilitetsbesked
-  // Spar på mobildata: hent kun automatisk hvis data-saver er slået fra; ellers venter vi på ét tryk.
-  if (navigator.connection?.saveData) { if (tab === "chat") renderChatAgain(); return; }
+  if (!gpu.ok) { if (tab === "chat") renderChatAgain(); return; } // hero viser kompatibilitetsbesked
+  // Auto-hent KUN på en kraftig computer. På telefon/tablet, efter et crash, eller med data-spar:
+  // vent på ét tryk, så vi aldrig crasher Safari med en for tung model eller bruger mobildata.
+  if (isMobile() || lsGet("jarvis_crashed") || navigator.connection?.saveData) { if (tab === "chat") renderChatAgain(); return; }
   await quickLoad();
 }
 
 (async function boot() {
+  // Hvis en modelindlæsning ikke nåede at blive færdig sidst (fanen crashede), så husk det og nedgradér.
+  try { const li = lsGet("jarvis_loading"); if (li) { lsSet("jarvis_crashed", li); lsDel("jarvis_loading"); } } catch {}
   try { if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {}); } catch {}
   try { await loadAll(); } catch (e) { console.warn("loadAll:", e); }
   try { updateHeader(); } catch (e) { console.warn(e); }

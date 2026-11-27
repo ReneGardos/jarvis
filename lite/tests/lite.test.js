@@ -183,3 +183,26 @@ test("CAD: IFC4 er struktur-gyldigt (balanceret, har kerne-entiteter)", () => {
   // Hver datalinje slutter med ;
   assert.ok(ifc.split("\nDATA;\n")[1].split("\n").filter((l) => l.startsWith("#")).every((l) => l.endsWith(";")));
 });
+
+// ---------------- Modelvalg (crash-sikring) ----------------
+import { recommendedModel, smallerModel } from "../core.js";
+const CAT = [
+  { id: "Qwen2.5-0.5B", kind: "chat", vram: 950 },
+  { id: "Qwen2.5-1.5B", kind: "chat", vram: 1300 },
+  { id: "gemma-2-2b", kind: "chat", vram: 1900 },
+  { id: "Qwen2.5-3B", kind: "chat", vram: 2500 },
+  { id: "Qwen2.5-7B", kind: "chat", vram: 5500 },
+  { id: "Qwen2.5-Coder-3B", kind: "code", vram: 2400 },
+];
+test("Model: lille budget (mobil) vælger lille model, aldrig den tunge", () => {
+  assert.equal(recommendedModel(CAT, "chat", { maxVram: 1500 }), "Qwen2.5-1.5B");
+  assert.equal(recommendedModel(CAT, "chat", { maxVram: 1000 }), "Qwen2.5-0.5B");
+  assert.equal(recommendedModel(CAT, "chat", { maxVram: 6000 }), "Qwen2.5-7B");
+  // under alle modeller → mindste tilgængelige, aldrig tom/crash
+  assert.equal(recommendedModel(CAT, "chat", { maxVram: 100 }), "Qwen2.5-0.5B");
+});
+test("Model: nedgradering efter crash vælger næste mindre", () => {
+  assert.equal(smallerModel(CAT, "Qwen2.5-3B"), "gemma-2-2b");
+  assert.equal(smallerModel(CAT, "gemma-2-2b"), "Qwen2.5-1.5B");
+  assert.equal(smallerModel(CAT, "Qwen2.5-0.5B"), "Qwen2.5-0.5B"); // floor
+});
