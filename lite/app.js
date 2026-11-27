@@ -17,12 +17,15 @@ const RENDER = { chat: renderChat, voice: renderVoice, build: renderBuild, code:
 export function go(t) {
   if (tab === "voice" && t !== "voice") stopVoice();
   tab = t;
-  $$("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === t));
+  const dockActive = ["know", "tasks", "more"].includes(t) ? "menu" : t;
+  $$("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === dockActive));
   view().innerHTML = "";
   RENDER[t]();
   window.scrollTo(0, 0);
 }
-$("#tabs").addEventListener("click", (e) => { const b = e.target.closest("button[data-tab]"); if (b) go(b.dataset.tab); });
+$("#tabs").addEventListener("click", (e) => { const b = e.target.closest("button[data-tab]"); if (!b) return; if (b.dataset.tab === "menu") toggleSheet(); else go(b.dataset.tab); });
+$("#sheet").addEventListener("click", (e) => { if (e.target.closest(".sheet-bg")) return toggleSheet(false); const b = e.target.closest("button[data-tab]"); if (b) { toggleSheet(false); go(b.dataset.tab); } });
+function toggleSheet(open) { const s = $("#sheet"); const show = open ?? s.classList.contains("hidden"); s.classList.toggle("hidden", !show); }
 $("#modelBtn").addEventListener("click", () => go("more"));
 document.addEventListener("model-changed", updateHeader);
 function updateHeader() {

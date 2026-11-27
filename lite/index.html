@@ -22,15 +22,25 @@
   </header>
   <div id="progress" class="progress hidden"><div id="progressBar"></div><span id="progressText"></span></div>
   <main id="view"></main>
-  <nav class="tabs" id="tabs">
-    <button data-tab="chat"><span>💬</span>Chat</button>
-    <button data-tab="voice"><span>🎙️</span>Stemme</button>
-    <button data-tab="build"><span>📐</span>Byg</button>
-    <button data-tab="code"><span>⌨️</span>Kode</button>
-    <button data-tab="know"><span>📚</span>Viden</button>
-    <button data-tab="tasks"><span>✅</span>Opgaver</button>
-    <button data-tab="more"><span>⚙️</span>Mere</button>
+  <nav class="dock" id="tabs">
+    <button data-tab="chat"><span class="ic">💬</span><label>Chat</label></button>
+    <button data-tab="build"><span class="ic">📐</span><label>Byg</label></button>
+    <button class="fab" data-tab="voice" aria-label="Stemme"><span class="ic">🎙️</span></button>
+    <button data-tab="code"><span class="ic">⌨️</span><label>Kode</label></button>
+    <button data-tab="menu"><span class="ic">⋯</span><label>Mere</label></button>
   </nav>
+  <div class="sheet-wrap hidden" id="sheet">
+    <div class="sheet-bg"></div>
+    <div class="sheet-panel">
+      <div class="sheet-grip"></div>
+      <h3 style="margin:2px 0 12px">Værktøjer</h3>
+      <div class="sheet-grid">
+        <button data-tab="know"><span>📚</span>Viden<small>Træn & dokumenter</small></button>
+        <button data-tab="tasks"><span>✅</span>Opgaver<small>Planlæg & påmind</small></button>
+        <button data-tab="more"><span>⚙️</span>Indstillinger<small>Model, data, backup</small></button>
+      </div>
+    </div>
+  </div>
   <div id="toast" class="toast hidden"></div>
   <script type="module" src="app.js"></script>
 </body>
