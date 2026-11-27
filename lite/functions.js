@@ -2,6 +2,7 @@
 // Beregnere kan både vælges fra menuen (inline-kort i chatten) OG kaldes af AI'en i naturligt sprog.
 import { $, AGENTS, esc, save, state, toast, uid } from "./core.js";
 import { BR18_U, CO2_LIMITS, LAMBDA, RS, daylight, roof, stairs, uValue, ventilation, wallMaterials } from "./calc.js";
+import { dawa, weather, WMO } from "./research.js";
 
 // ---------------- AI-værktøjer (eksakte beregninger, kaldt af modellen) ----------------
 export const calcTools = {
@@ -48,6 +49,8 @@ const TOOLS = [
   ["code", "⌨️", "Kode", "Byg hjemmesider og webprojekter"],
   ["research", "🔎", "Undersøg", "Søg på nettet med kilder"],
   ["image", "🖼️", "Billede", "Vedhæft et billede"],
+  ["adresse", "📍", "Adresse", "Slå en dansk adresse op"],
+  ["vejr", "🌤️", "Vejr", "Vejr på byggepladsen"],
   ["uvaerdi", "📏", "U-værdi", "Isolering og varmetab"],
   ["trappe", "🪜", "Trappe", "Stigninger og grund"],
   ["materialer", "🧱", "Materialer", "Mængder til skillevæg"],
@@ -85,7 +88,7 @@ export function inlineCalc(name, host, onResult) {
   const card = document.createElement("div");
   card.className = "msg bot calc-card";
   host.appendChild(card);
-  ({ uvaerdi: uCalc, trappe: trappeCalc, materialer: matCalc, dagslys: dayCalc, ventilation: ventCalc, co2: co2Calc })[name](card, onResult);
+  ({ uvaerdi: uCalc, trappe: trappeCalc, materialer: matCalc, dagslys: dayCalc, ventilation: ventCalc, co2: co2Calc, adresse: addrCalc, vejr: weatherCalc })[name](card, onResult);
   card.scrollIntoView({ behavior: "smooth", block: "end" });
   return card;
 }
@@ -164,4 +167,63 @@ function co2Calc(card, onResult) {
     `<label>Bygningstype<select data-k="t">${Object.keys(CO2_LIMITS).map((k) => `<option>${k}</option>`).join("")}</select></label><div data-k="res" class="result"></div>`;
   const calc = () => { const v = CO2_LIMITS[card.querySelector("[data-k=t]").value]; card.querySelector("[data-k=res]").innerHTML = `Grænseværdi <b>${f(v[2025], 1)}</b> kg CO₂e/m²/år (2025) · ${f(v[2027], 1)} (2027) · ${f(v[2029], 1)} (2029)`; };
   card.addEventListener("input", calc); calc();
+}
+
+function addrCalc(card, onResult) {
+  card.innerHTML = head("📍 Adresseopslag") +
+    `<input data-k="q" placeholder="Skriv en adresse, fx Rådhuspladsen 1, København" autocomplete="off" />
+     <div data-k="res" style="margin-top:8px"></div>`;
+  let t;
+  const q = card.querySelector("[data-k=q]"), res = card.querySelector("[data-k=res]");
+  q.addEventListener("input", () => {
+    clearTimeout(t);
+    if (q.value.trim().length < 3) { res.innerHTML = ""; return; }
+    res.innerHTML = `<span class="muted">Søger…</span>`;
+    t = setTimeout(async () => {
+      try {
+        const list = await dawa(q.value.trim());
+        if (!list.length) { res.innerHTML = `<span class="muted">Ingen match</span>`; return; }
+        res.innerHTML = list.slice(0, 5).map((a, i) => `<button class="btn sub sm" data-i="${i}" style="display:block;width:100%;text-align:left;margin-bottom:4px">${esc(a.tekst)}</button>`).join("");
+        res.querySelectorAll("[data-i]").forEach((b) => b.onclick = () => {
+          const a = list[+b.dataset.i];
+          res.innerHTML = `<div class="result"><b style="font-size:15px">${esc(a.tekst)}</b><br>${a.kommune ? esc(a.kommune) + " Kommune<br>" : ""}
+            Koordinater: ${a.lat?.toFixed(5)}, ${a.lon?.toFixed(5)}<br>
+            <a href="https://www.google.com/maps?q=${a.lat},${a.lon}" target="_blank" rel="noopener">Kort</a> ·
+            <a href="https://bbr.dk/se-bbr-oplysninger" target="_blank" rel="noopener">BBR-opslag</a></div>`;
+          onResult?.(`Adresse: ${a.tekst} (${a.lat}, ${a.lon})`);
+        });
+      } catch (e) { res.innerHTML = `<span class="badge bad">${esc(e.message)}</span>`; }
+    }, 350);
+  });
+}
+
+function weatherCalc(card, onResult) {
+  card.innerHTML = head("🌤️ Vejr på byggepladsen") +
+    `<div class="row"><button class="btn sub sm" data-k="geo">📍 Min placering</button><input data-k="q" class="grow" placeholder="eller skriv en adresse" /></div>
+     <div data-k="res" style="margin-top:8px"></div>`;
+  const res = card.querySelector("[data-k=res]");
+  const show = async (lat, lon, label) => {
+    res.innerHTML = `<span class="muted">Henter vejr…</span>`;
+    try {
+      const d = await weather(lat, lon);
+      const c = d.current, days = d.daily;
+      const day = (i) => `<div style="flex:1;text-align:center"><div class="muted" style="font-size:11px">${["Søn","Man","Tir","Ons","Tor","Fre","Lør"][new Date(days.time[i]).getDay()]}</div>
+        <div style="font-size:20px">${(WMO[days.weather_code[i]] || "").split(" ")[0]}</div>
+        <div><b>${Math.round(days.temperature_2m_max[i])}°</b> <span class="muted">${Math.round(days.temperature_2m_min[i])}°</span></div>
+        <div class="muted" style="font-size:10px">${days.precipitation_sum[i]} mm · ${Math.round(days.wind_speed_10m_max[i])} m/s</div></div>`;
+      res.innerHTML = `<div class="result">${label ? `<div class="muted">${esc(label)}</div>` : ""}
+        <div style="font-size:15px;margin:4px 0"><b>${Math.round(c.temperature_2m)}°C</b> ${WMO[c.weather_code] || ""} · vind ${Math.round(c.wind_speed_10m)} m/s · nedbør ${c.precipitation} mm</div>
+        <div style="display:flex;gap:6px;margin-top:8px">${[0, 1, 2, 3].map(day).join("")}</div></div>`;
+      onResult?.(`Vejr ${label || ""}: ${Math.round(c.temperature_2m)}°C, ${(WMO[c.weather_code] || "").replace(/^\S+\s/, "")}`);
+    } catch (e) { res.innerHTML = `<span class="badge bad">${esc(e.message)}</span>`; }
+  };
+  card.querySelector("[data-k=geo]").onclick = () => {
+    res.innerHTML = `<span class="muted">Finder din placering…</span>`;
+    navigator.geolocation?.getCurrentPosition((p) => show(p.coords.latitude, p.coords.longitude, "Din placering"),
+      () => res.innerHTML = `<span class="badge warn">Kunne ikke få placering – skriv en adresse i stedet</span>`);
+  };
+  let t; card.querySelector("[data-k=q]").addEventListener("input", (e) => {
+    clearTimeout(t); const v = e.target.value.trim(); if (v.length < 3) return;
+    t = setTimeout(async () => { try { const a = (await dawa(v))[0]; if (a) show(a.lat, a.lon, a.tekst); } catch {} }, 500);
+  });
 }

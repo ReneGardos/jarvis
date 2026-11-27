@@ -242,6 +242,9 @@ export function buildContext(agentKey, userText, history, extra = "") {
   const a = AGENTS[agentKey] || AGENTS.konstruktor;
   const now = new Date();
   const parts = [a.system, `I dag er ${now.toLocaleDateString("da-DK", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}, kl. ${now.toLocaleTimeString("da-DK", { hour: "2-digit", minute: "2-digit" })}.`];
+  const p = state.settings.profile || {};
+  if (p.navn || p.firma || p.om) parts.push("Om brugeren (brug det aktivt, tiltal personen personligt):\n" +
+    [p.navn && `Navn: ${p.navn}`, p.firma && `Firma/fag: ${p.firma}`, p.om && p.om].filter(Boolean).join("\n"));
   const mems = searchMemories(userText, 6);
   if (mems.length) parts.push("Det du husker om brugeren:\n" + mems.map((m) => "- " + m.content).join("\n"));
   let sources = [];

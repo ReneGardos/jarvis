@@ -5,7 +5,7 @@
 
 const BR = "https://bygningsreglementet.dk";
 
-export const SEED_VERSION = 1;
+export const SEED_VERSION = 2;
 
 export const SEED = [
   // ---------- Energi og klimaskærm ----------
@@ -53,4 +53,11 @@ export const SEED = [
     text: "Imprægneret træ klassificeres efter Nordisk Træbeskyttelsesråd: NTR klasse AB til træ over jord (fx terrassebrædder, hegn), NTR klasse A til træ i kontakt med jord eller vand (fx stolper i jord). Afskårne ender bør efterbehandles. Hold afstand mellem træ og terræn, og sørg for at vand kan løbe af og træet kan tørre ud (konstruktiv træbeskyttelse)." },
   { title: "Bygningskonstruktør: byggetilladelse og dokumentation", category: "Byggesag", source: BR,
     text: "Byggesager søges digitalt på Byg og Miljø (bygogmiljoe.dk). Bygninger klassificeres i anvendelseskategorier, brandklasser og konstruktionsklasser (CC1–CC4), som bestemmer dokumentationskravene. Visse mindre byggerier (fx mindre carporte, udhuse og drivhuse under bestemte arealer) kan udføres uden byggetilladelse, men skal stadig overholde BR18 og lokalplanen. Kontrollér altid lokalplan og servitutter på plandata.dk og tinglysning.dk." },
+  { title: "Tømrer: tag – undertag og lægtning", category: "Tømrerfaget", source: "Generel fagviden (BUILD-anvisninger, TOR)",
+    text: "Et tag opbygges typisk: tagbelægning (tegl, beton, stål, skifer) på lægter, der ligger på afstandslister over et undertag, som ligger på spær. Undertaget leder vand ud og ventilerer. Skelnes mellem diffusionsåbne (banevarer direkte på spær/isolering) og faste undertage (brædder/plader med fald). Taghældning afgør belægning: tegl typisk fra ca. 25°, betontagsten fra ca. 20°, lavere kræver tætnede løsninger. Følg altid belægningsproducentens og undertagsleverandørens anvisning samt TOR's tagvejledninger for lægtedimension og -afstand." },
+  { title: "Tømrer: fundament, sokkel og stolpesko (terrasse/carport)", category: "Tømrerfaget", source: "Generel fagviden",
+    text: "Stolper til terrasse, carport og hegn sættes i stolpesko på støbte punktfundamenter (betonfod) i frostfri dybde – typisk min. 90 cm i Danmark – så frost ikke løfter dem. Hold træ fri af beton og terræn (stolpesko med afstandsklods) for at undgå opsugning og råd. Brug NTR klasse A til jord-/vandkontakt. Bærende terrasse-/altankonstruktioner skal dimensioneres efter Eurocode 5; spændvidder for strøer og bjælker afhænger af dimension, træklasse og last." },
+  { title: "Tømrer: vinduer og døre – montering og tæthed", category: "Tømrerfaget", source: "Generel fagviden (BUILD-anvisning om vinduesmontage)",
+    text: "Vinduer monteres i lod, vand og plan, fastgjort med karmskruer eller bæslag efter fabrikantens anvisning. Fugen mellem karm og murhul tætnes indvendigt lufttæt (fugebånd/dampspærretape) og udvendigt regntæt men diffusionsåbent, så eventuel fugt kan slippe ud – aldrig tættere udefra end indefra. Stopning med mineraluld alene er ikke lufttæt. Husk afvanding/sålbænk med fald udad og tætning ved fodblik. Lufttætheden har stor betydning for energiforbrug og for at undgå kondens og råd i konstruktionen." },
+
 ];

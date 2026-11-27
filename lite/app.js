@@ -116,9 +116,24 @@ function renderChat() {
     </form>`;
   const chat = $("#chat");
   const draw = () => {
-    chat.innerHTML = conv.messages.length ? "" : `<div class="empty"><p>${AGENTS[agent].icon} <b>${esc(AGENTS[agent].name)}</b> – kører 100 % på din enhed.</p>
-      ${(STARTERS[agent] || []).map((s) => `<button class="starter" data-s="${esc(s)}">${esc(s)}</button>`).join("")}</div>`;
+    if (conv.messages.length) { chat.innerHTML = ""; }
+    else {
+      const navn = state.settings.profile?.navn;
+      const hour = new Date().getHours();
+      const hej = hour < 10 ? "Godmorgen" : hour < 18 ? "Goddag" : "Godaften";
+      const noGpu = !("gpu" in navigator);
+      chat.innerHTML = `<div class="hero">
+        <div class="hero-orb"></div>
+        <div class="hero-title">${hej}${navn ? ", " + esc(navn) : ""}</div>
+        <div class="hero-sub">${AGENTS[agent].icon} ${esc(AGENTS[agent].name)} · kører 100&nbsp;% privat på din enhed</div>
+        ${noGpu ? `<div class="warnbox" style="margin-top:14px;text-align:left">Din browser mangler WebGPU, så AI-modellen kan ikke køre. Brug Chrome/Edge eller Safari på iOS&nbsp;26+/macOS&nbsp;26+.</div>`
+          : !llm.engine ? `<button class="btn" id="heroLoad" style="margin-top:16px">⚡ Tænd Jarvis (hent model)</button>` : ""}
+        <div class="hero-chips">${(STARTERS[agent] || []).map((s) => `<button class="starter" data-s="${esc(s)}">${esc(s)}</button>`).join("")}</div>
+        <div class="hero-hint muted">Tryk <b>＋</b> for funktioner: tegning, kode, beregnere, undersøg, vejr…</div>
+      </div>`;
+    }
     conv.messages.forEach((m, i) => chat.appendChild(bubble(m, i, conv)));
+    $("#heroLoad")?.addEventListener("click", quickLoad);
   };
   draw();
   let researchNext = false;
@@ -414,7 +429,18 @@ async function fileToText(f) {
 // ---------------- Mere: model, hukommelse, indstillinger, backup ----------------
 async function renderMore() {
   const gpu = await webgpuInfo();
+  const prof = state.settings.profile || {};
   view().innerHTML = `<h2>Indstillinger</h2>
+    <div class="card"><h3 style="margin-top:0">Om mig – så Jarvis kender dig</h3>
+      <div class="grid2">
+        <label>Navn<input id="pNavn" value="${esc(prof.navn || "")}" placeholder="fx René" /></label>
+        <label>Firma / fag<input id="pFirma" value="${esc(prof.firma || "")}" placeholder="fx Tømrermester, eget firma" /></label>
+      </div>
+      <label style="margin-top:8px">Sådan vil jeg have hjælp (tone, detaljer, hvad jeg laver)
+        <textarea id="pOm" rows="3" placeholder="fx: Jeg er uddannet tømrer og laver tilbygninger og tage. Svar konkret og kort, med mål i mm. Husk BR18.">${esc(prof.om || "")}</textarea></label>
+      <button class="btn" id="pSave" style="margin-top:8px">Gem profil</button>
+      <p class="muted" style="font-size:12px">Bruges i alle samtaler. Ligger kun på din enhed.</p>
+    </div>
     <div class="card"><h3 style="margin-top:0">AI-model (kører på din enhed)</h3>
       ${gpu.ok ? `<span class="badge ok">WebGPU OK</span>` : `<div class="warnbox">${esc(gpu.reason)}</div>`}
       <div id="models" class="muted">Henter modelkatalog…</div>
@@ -483,6 +509,7 @@ async function renderMore() {
   };
   $("#memAdd").onclick = () => { const c = $("#memNew").value.trim(); if (!c) return; state.memories.unshift({ id: uid(), content: c, importance: 0.8, createdAt: Date.now() }); save("memories"); $("#memNew").value = ""; drawMems(); };
   $("#autoMem").onchange = (e) => { state.settings.autoMemory = e.target.checked; save("settings"); };
+  $("#pSave").onclick = () => { state.settings.profile = { navn: $("#pNavn").value.trim(), firma: $("#pFirma").value.trim(), om: $("#pOm").value.trim() }; save("settings"); toast("Profil gemt ✓ – Jarvis kender dig nu"); };
 
   // Stemme
   $("#lang").value = state.settings.lang; $("#whisper").value = state.settings.whisper;
